@@ -1,0 +1,9 @@
+nxsbuild_autogen/timestamp: \
+	/Users/luka/Work/Modri_Planet/deps/nexus2/nexus/src/nxsbuild/CMakeLists.txt \
+	/Users/luka/Work/Modri_Planet/deps/nexus2/nexus/src/nxsbuild/main.cpp \
+	/Users/luka/Work/Modri_Planet/deps/nexus2/nexus/src/nxsbuild/partition.h \
+	/Users/luka/Work/Modri_Planet/deps/nexus2/nexus/src/nxsbuild/trianglesoup.h \
+	/Users/luka/Work/Modri_Planet/deps/nexus2/nexus/src/nxsbuild/vertex_cache_optimizer.h \
+	/Users/luka/Work/Modri_Planet/deps/nexus2/nexus/vcglib/wrap/system/qgetopt.cpp \
+	/Users/luka/Work/Modri_Planet/deps/nexus2/nexus/vcglib/wrap/system/qgetopt.h \
+	/usr/local/bin/cmake
