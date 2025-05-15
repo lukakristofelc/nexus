@@ -256,25 +256,37 @@ void ObjLoader::cacheVertices() {
 				n_vertices++;
 
 				vcg::Point3d p;
-				int n = sscanf(buffer, "v %lf %lf %lf", &p[0], &p[1], &p[2]);
-				if(n != 3) throw QString("error parsing vertex line %1 while caching").arg(buffer);
-				p -= origin;
-				p[0] *= scale[0];
-				p[1] *= scale[1];
-				p[2] *= scale[2];
-				box.Add(p);
-				
-				vertex.v[0] = (float)p[0];
-				vertex.v[1] = (float)p[1];
-				vertex.v[2] = (float)p[2];
+				float r = 0.0f, g = 0.0f, b = 0.0f; // Added variables for color
+				int n = sscanf(buffer, "v %lf %lf %lf %f %f %f", &p[0], &p[1], &p[2], &r, &g, &b);
 
-				cnt++;
-				if(quantization) {
-					quantize(vertex.v[0]);
-					quantize(vertex.v[1]);
-					quantize(vertex.v[2]);
+				if(n >= 3) {
+					p -= origin;
+					p[0] *= scale[0];
+					p[1] *= scale[1];
+					p[2] *= scale[2];
+					box.Add(p);
+					
+					vertex.v[0] = (float)p[0];
+					vertex.v[1] = (float)p[1];
+					vertex.v[2] = (float)p[2];
+					
+					if(n >= 6) {  // If we found RGB values
+						vertex.c[0] = (unsigned char)(r * 255);
+						vertex.c[1] = (unsigned char)(g * 255);
+						vertex.c[2] = (unsigned char)(b * 255);
+						vertex.c[3] = 255;  // Alpha - fully opaque
+						has_colors = true;
+					}
+					
+					cnt++;
+					if(quantization) {
+						quantize(vertex.v[0]);
+						quantize(vertex.v[1]);
+						quantize(vertex.v[2]);
+					}
+				} else {
+					throw QString("error parsing vertex line %1 while caching").arg(buffer);
 				}
-
 
 			}//skipping other properties in OBJ
 			continue;
@@ -482,23 +494,35 @@ quint32 ObjLoader::getTriangles(quint32 size, Triangle *faces) {
 							current.vertices[k].t[j] = vtxtuv[vtxt1[m * 3 + k] * 2 + j];
 				}
 				current.tex = current_texture_id;
-				if (has_colors && current_color) {
-					current.vertices[0].c[0] = RED(current_color);
-					current.vertices[0].c[1] = GREEN(current_color);
-					current.vertices[0].c[2] = BLUE(current_color);
-					current.vertices[0].c[3] = ALPHA(current_color);
 
-					current.vertices[1].c[0] = RED(current_color);
-					current.vertices[1].c[1] = GREEN(current_color);
-					current.vertices[1].c[2] = BLUE(current_color);
-					current.vertices[1].c[3] = ALPHA(current_color);
-
-					current.vertices[2].c[0] = RED(current_color);
-					current.vertices[2].c[1] = GREEN(current_color);
-					current.vertices[2].c[2] = BLUE(current_color);
-					current.vertices[2].c[3] = ALPHA(current_color);
+				// Only apply colors if there's no texture available
+				if (current.tex == -1) {
+					if (has_colors && current_color) {
+						// Only assign MTL-derived colors if we don't have per-vertex colors
+						bool has_per_vertex_colors = true;
+						for (int k = 0; k < 3; k++) {
+							if (current.vertices[k].c[0] == 0 && 
+								current.vertices[k].c[1] == 0 && 
+								current.vertices[k].c[2] == 0) {
+								has_per_vertex_colors = false;
+								break;
+							}
+						}
+						
+						if (!has_per_vertex_colors) {
+							// Apply material colors only if we don't have per-vertex colors
+							for (int v = 0; v < 3; v++) {
+								current.vertices[v].c[0] = RED(current_color);
+								current.vertices[v].c[1] = GREEN(current_color);
+								current.vertices[v].c[2] = BLUE(current_color);
+								current.vertices[v].c[3] = ALPHA(current_color);
+							}
+						}
+					}
 				}
+
 				current.node = 0;
+
 				if (current.isDegenerate()) {
 					continue;
 				}
@@ -554,27 +578,40 @@ quint32 ObjLoader::getVertices(quint32 size, Splat *vertices) {
 		Splat &vertex = vertices[count];
 		
 		vcg::Point3d p;
-		int n = sscanf(buffer, "v %lf %lf %lf", &p[0], &p[1], &p[2]);
-		if(n != 3) throw QString("error parsing vertex line %1").arg(buffer);
+		float r = 0.0f, g = 0.0f, b = 0.0f; // Added variables for color
+		int n = sscanf(buffer, "v %lf %lf %lf %f %f %f", &p[0], &p[1], &p[2], &r, &g, &b);
 		
-		p -= origin;
-		p[0] *= scale[0];
-		p[1] *= scale[1];
-		p[2] *= scale[2];
-		box.Add(p);
+		if(n >= 3) {
+			p -= origin;
+			p[0] *= scale[0];
+			p[1] *= scale[1];
+			p[2] *= scale[2];
+			box.Add(p);
 
-		vertex.v[0] = (float)p[0];
-		vertex.v[1] = (float)p[1];
-		vertex.v[2] = (float)p[2];
-	
-		if(quantization) {
-			quantize(vertex.v[0]);
-			quantize(vertex.v[1]);
-			quantize(vertex.v[2]);
+			vertex.v[0] = (float)p[0];
+			vertex.v[1] = (float)p[1];
+			vertex.v[2] = (float)p[2];
+			
+			if(n >= 6) {  // If we found RGB values
+				vertex.c[0] = (unsigned char)(r * 255);
+				vertex.c[1] = (unsigned char)(g * 255);
+				vertex.c[2] = (unsigned char)(b * 255);
+				vertex.c[3] = 255;  // Alpha - fully opaque
+				has_colors = true;
+			}
+			
+			if(quantization) {
+				quantize(vertex.v[0]);
+				quantize(vertex.v[1]);
+				quantize(vertex.v[2]);
+			}
+			n_vertices++;
+			current_vertex++;
+			count++;
+		} else {
+			throw QString("error parsing vertex line %1").arg(buffer);
 		}
-		n_vertices++;
-		current_vertex++;
-		count++;
 	}
+	
 	return count;
 }
