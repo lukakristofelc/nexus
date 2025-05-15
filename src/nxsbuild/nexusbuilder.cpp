@@ -346,8 +346,10 @@ QImage NexusBuilder::extractNodeTex(TMesh &mesh, int level, float &error, float 
 		finalSize[ 1 ] = (int) nextPowerOf2( finalSize[ 1 ] );
 	}
 
-	QImage image(finalSize[0], finalSize[1], QImage::Format_RGB32);
-	image.fill(QColor(127, 127, 127));
+	// use ARGB32_Premultiplied so we get a known (255) alpha value as well
+	QImage image(finalSize[0], finalSize[1], QImage::Format_ARGB32_Premultiplied);
+	// fill with mid-gray, full opacity
+	image.fill(QColor(127, 127, 127, 255));
 	//copy boxes using mapping
 
 	float pdx = 1/(float)image.width();
