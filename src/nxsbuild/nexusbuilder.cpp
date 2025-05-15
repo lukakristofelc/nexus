@@ -143,6 +143,7 @@ void NexusBuilder::create(KDTree *tree, Stream *stream, uint top_node_size) {
 	int level = 0;
 	int last_top_level_size = 0;
 	do {
+		cout << "Creating level " << level << endl;
 		tree->clear();
 		if(level % 2) tree->setAxesDiagonal();
 		else tree->setAxesOrthogonal();
