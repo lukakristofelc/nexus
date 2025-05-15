@@ -495,28 +495,25 @@ quint32 ObjLoader::getTriangles(quint32 size, Triangle *faces) {
 				}
 				current.tex = current_texture_id;
 
-				// Only apply colors if there's no texture available
-				if (current.tex == -1) {
-					if (has_colors && current_color) {
-						// Only assign MTL-derived colors if we don't have per-vertex colors
-						bool has_per_vertex_colors = true;
-						for (int k = 0; k < 3; k++) {
-							if (current.vertices[k].c[0] == 0 && 
-								current.vertices[k].c[1] == 0 && 
-								current.vertices[k].c[2] == 0) {
-								has_per_vertex_colors = false;
-								break;
-							}
+				if (has_colors && current_color) {
+					// Only assign MTL-derived colors if we don't have per-vertex colors
+					bool has_per_vertex_colors = true;
+					for (int k = 0; k < 3; k++) {
+						if (current.vertices[k].c[0] == 0 && 
+							current.vertices[k].c[1] == 0 && 
+							current.vertices[k].c[2] == 0) {
+							has_per_vertex_colors = false;
+							break;
 						}
-						
-						if (!has_per_vertex_colors) {
-							// Apply material colors only if we don't have per-vertex colors
-							for (int v = 0; v < 3; v++) {
-								current.vertices[v].c[0] = RED(current_color);
-								current.vertices[v].c[1] = GREEN(current_color);
-								current.vertices[v].c[2] = BLUE(current_color);
-								current.vertices[v].c[3] = ALPHA(current_color);
-							}
+					}
+					
+					if (!has_per_vertex_colors) {
+						// Apply material colors only if we don't have per-vertex colors
+						for (int v = 0; v < 3; v++) {
+							current.vertices[v].c[0] = RED(current_color);
+							current.vertices[v].c[1] = GREEN(current_color);
+							current.vertices[v].c[2] = BLUE(current_color);
+							current.vertices[v].c[3] = ALPHA(current_color);
 						}
 					}
 				}
