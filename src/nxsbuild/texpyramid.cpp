@@ -29,7 +29,7 @@ void TexLevel::init(int t, TexAtlas* c, QImage& texture, int _level = 0) {
 			int wy = (sy + side > height)? height - sy : side;
 			int isy = height - (sy + wy);
 			QImage img = texture.copy(QRect(sx, isy, wx, wy));
-			img = img.convertToFormat(QImage::Format_RGB32);
+			img = img.convertToFormat(QImage::Format_ARGB32);
 			img = img.mirrored();
 			collection->addImg(TexAtlas::Index(tex, level, x + y*tilew), img);
 		}
@@ -61,7 +61,7 @@ bool TexLevel::init(int t, TexAtlas *c, LoadTexture &texture, int _level = 0) {
 			int isy = height - (sy + wy);
 			reader.setClipRect(QRect(sx, isy, wx, wy));
 
-			QImage img(wx, wy, QImage::Format_RGB32);
+			QImage img(wx, wy, QImage::Format_ARGB32);
 			bool ok = reader.read(&img);
 			if(!ok) {
 				cout << "Failed reading texture: " << qPrintable(reader.fileName()) << qPrintable(reader.errorString()) <<  endl;
@@ -82,7 +82,7 @@ QImage TexLevel::read(QRect region) {
 	int ex = (region.x() + region.width() - 1)/side; //last pixel needed
 	int ey = (region.y() + region.height() - 1)/side;
 
-	QImage image(region.size(), QImage::Format_RGB32);
+	QImage image(region.size(), QImage::Format_ARGB32);
 
 	QPainter painter(&image);
 	for(int y = sy; y <= ey; y++) {
@@ -256,7 +256,7 @@ QImage TexAtlas::getImg(Index index) {
 	if(dt == disk.end())
 		throw QString("unespected missing image in disk and ram");
 
-	QImage img(dt->second.w, dt->second.h, QImage::Format_RGB32);
+	QImage img(dt->second.w, dt->second.h, QImage::Format_ARGB32);
 	uchar *data = storage.map(dt->second.offset, dt->second.size);
 	img.loadFromData(data, dt->second.size);
 	storage.unmap(data);
@@ -300,7 +300,7 @@ void TexAtlas::pruneCache() {
 			d.offset = storage.pos();
 			d.w = it->second.image.width();
 			d.h = it->second.image.height();
-			it->second.image.save(&storage, "jpg", quality);
+			it->second.image.save(&storage, "png", quality);
 			d.size = storage.pos() - d.offset;
 			disk[index] = d;
 		}

@@ -346,7 +346,7 @@ QImage NexusBuilder::extractNodeTex(TMesh &mesh, int level, float &error, float 
 		finalSize[ 1 ] = (int) nextPowerOf2( finalSize[ 1 ] );
 	}
 
-	QImage image(finalSize[0], finalSize[1], QImage::Format_RGB32);
+	QImage image(finalSize[0], finalSize[1], QImage::Format_ARGB32);
 	image.fill(QColor(127, 127, 127));
 	//copy boxes using mapping
 
@@ -638,7 +638,7 @@ void NexusBuilder::processBlock(KDTreeSoup *input, StreamSoup *output, uint bloc
 
 				output_pixels += nodetex.width()*nodetex.height();
 
-				QImageWriter writer(&nodeTex, "jpg");
+				QImageWriter writer(&nodeTex, "png");
 				writer.setQuality(tex_quality);
 #if QT_VERSION >= QT_VERSION_CHECK(5, 5, 0)
 				writer.setOptimizedWrite(true);
@@ -661,8 +661,8 @@ void NexusBuilder::processBlock(KDTreeSoup *input, StreamSoup *output, uint bloc
 #ifdef DEBUG_TEXTURES
 			static int counter = 0;
 
-			QString texname = QString::number(counter) + ".jpg";
-			QImageWriter rewriter(texname, "jpg");
+			QString texname = QString::number(counter) + ".png";
+			QImageWriter rewriter(texname, "png");
 			rewriter.setQuality(tex_quality);
 			rewriter.write(nodetex);
 
@@ -982,7 +982,7 @@ void NexusBuilder::save(QString filename) {
 					nodeTex.seek(s);
 					auto buffer = nodeTex.read(size);
 
-					QFile texfile(QString("%1/%2.jpg").arg(basename).arg(i));
+					QFile texfile(QString("%1/%2.png").arg(basename).arg(i));
 					texfile.open(QFile::WriteOnly);
 					texfile.write(buffer);
 				}
