@@ -292,23 +292,36 @@ QImage NexusBuilder::extractNodeTex(TMesh &mesh, int level, float &error, float 
 
 		float w = atlas.width(tex, level); //img->size().width();
 		float h = atlas.height(tex, level); //img->size().height();
-		float px = 1/(float)w;
-		float py = 1/(float)h;
-		box.Offset(vcg::Point2f(px, py));
-		//snap to higher pix (clamped by 0 and 1 anyway)
-		vcg::Point2i &size = sizes[b];
-		vcg::Point2i &origin = origins[b];
-		origin[0] = std::max(0.0f, floor(box.min[0]/px));
-		origin[1] = std::max(0.0f, floor(box.min[1]/py));
-		if(origin[0] >= w) origin[0] = w-1;
-		if(origin[1] >= h) origin[1] = h-1;
+		
+		// Handle very small textures (1x1 or similar)
+		if(w <= 1 || h <= 1) {
+			vcg::Point2i &size = sizes[b];
+			vcg::Point2i &origin = origins[b];
+			origin[0] = 0;
+			origin[1] = 0;
+			size[0] = (int)w;
+			size[1] = (int)h;
+			if(size[0] <= 0) size[0] = 1;
+			if(size[1] <= 0) size[1] = 1;
+		} else {
+			float px = 1/(float)w;
+			float py = 1/(float)h;
+			box.Offset(vcg::Point2f(px, py));
+			//snap to higher pix (clamped by 0 and 1 anyway)
+			vcg::Point2i &size = sizes[b];
+			vcg::Point2i &origin = origins[b];
+			origin[0] = std::max(0, (int)floor(box.min[0]/px));
+			origin[1] = std::max(0, (int)floor(box.min[1]/py));
+			if(origin[0] >= w) origin[0] = w-1;
+			if(origin[1] >= h) origin[1] = h-1;
 
-		assert(origin[0] >= 0);
+			assert(origin[0] >= 0);
 
-		size[0] = std::min(w, ceil(box.max[0]/px)) - origin[0];
-		size[1] = std::min(h, ceil(box.max[1]/py)) - origin[1];
-		if(size[0] <= 0) size[0] = 1;
-		if(size[1] <= 0) size[1] = 1;
+			size[0] = std::min(w, ceil(box.max[0]/px)) - origin[0];
+			size[1] = std::min(h, ceil(box.max[1]/py)) - origin[1];
+			if(size[0] <= 0) size[0] = 1;
+			if(size[1] <= 0) size[1] = 1;
+		}
 	}
 
 	//pack boxes;

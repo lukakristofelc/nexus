@@ -99,6 +99,12 @@ QImage TexLevel::read(QRect region) {
 			int w = std::min(region.width() -tx, side - ox);
 			int h = std::min(region.height() -ty, side - oy);
 
+			// Handle edge case for very small textures (1x1 pixel)
+			if(w <= 0 || h <= 0) {
+				// Skip this tile as it has no valid area to copy
+				continue;
+			}
+			
 			QRect target(tx, ty, w, h);
 			QRect source(ox, oy, w, h);
 			assert(w > 0   && h > 0);
