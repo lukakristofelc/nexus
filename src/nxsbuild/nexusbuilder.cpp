@@ -360,7 +360,7 @@ QImage NexusBuilder::extractNodeTex(TMesh &mesh, int level, float &error, float 
 	}
 
 	QImage image(finalSize[0], finalSize[1], QImage::Format_ARGB32);
-	image.fill(QColor(127, 127, 127));
+	image.fill(QColor(0, 0, 0, 0)); // Use transparent background instead of gray
 	//copy boxes using mapping
 
 	float pdx = 1/(float)image.width();
