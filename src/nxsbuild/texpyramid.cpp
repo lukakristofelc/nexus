@@ -83,8 +83,10 @@ QImage TexLevel::read(QRect region) {
 	int ey = (region.y() + region.height() - 1)/side;
 
 	QImage image(region.size(), QImage::Format_ARGB32);
+	image.fill(QColor(0, 0, 0, 0)); // Initialize with transparent background
 
 	QPainter painter(&image);
+	painter.setCompositionMode(QPainter::CompositionMode_SourceOver); // Ensure proper alpha blending
 	for(int y = sy; y <= ey; y++) {
 		for(int x = sx; x <= ex; x++) {
 			int id = x + y * tilew;
@@ -104,7 +106,7 @@ QImage TexLevel::read(QRect region) {
 				// Skip this tile as it has no valid area to copy
 				continue;
 			}
-			
+
 			QRect target(tx, ty, w, h);
 			QRect source(ox, oy, w, h);
 			assert(w > 0   && h > 0);

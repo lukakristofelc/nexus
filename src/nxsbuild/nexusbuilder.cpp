@@ -437,6 +437,7 @@ QImage NexusBuilder::extractNodeTex(TMesh &mesh, int level, float &error, float 
 		QMutexLocker locker(&m_atlas);
 		//	static int boxid = 0;
 		QPainter painter(&image);
+		painter.setCompositionMode(QPainter::CompositionMode_SourceOver); // Ensure proper alpha blending
 		//convert tex coordinates using mapping
 		for(int i = 0; i < boxes.size(); i++) {
 
