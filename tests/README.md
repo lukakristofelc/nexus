@@ -22,6 +22,14 @@ IndexedDB optional, separates download slots from pending processing, and queues
 GPU uploads under a 4 ms frame budget. Individual GPU calls cannot be interrupted.
 Traversal reuses arrays, and eviction scans resident nodes only.
 
+The latest renderer patch corrects the near clipping plane and orthographic
+pixel sizing, retains all root nodes during traversal, and adds a small LOD
+hysteresis to avoid toggling detail around the target error. It caches shader
+locations and vertex-array layouts (WebGL 2 or the WebGL 1 extension), restores
+host buffer/texture bindings, and uses trilinear and capped anisotropic filtering.
+ImageBitmap decoding uses explicit vertical orientation with an image-element
+fallback; decoded image memory is charged before queueing an upload.
+
 Call `Nexus.beginFrame(gl)` before rendering the scene and `Nexus.endFrame(gl)`
 after all meshes have rendered. Continue calling `endFrame` on idle animation
 ticks so queued uploads can complete and request a redraw. The HTML examples
@@ -29,11 +37,20 @@ demonstrate this and reset Three.js state after Nexus uploads. `updateCache`
 alone no longer uploads decoded data, and the per-object `nexus_three.js` hook
 no longer performs cache admission.
 
+Applications can call `Nexus.beginFrame(gl, fps, moving)` to report camera
+movement. Moving frames use a 1 ms upload budget and defer large refinement
+textures when all roots are ready. Passing `false` as the third argument
+restores the requested detail immediately and uses the normal 4 ms upload budget.
+Old queued detail can be released when new-view work needs processing slots.
+The example viewers omit movement reporting and use the normal upload budget.
+
 `Nexus.getNodeBuffer(mesh, id)` shares geometry reads with other consumers and
 returns the original on-disk buffer; compressed nodes still need decoding.
 `Nexus.getStats(gl)` reports queue sizes, cache bytes, and stage timings;
 `Nexus.resetStats(gl)` clears the timing counters. Cloud-test's asynchronous
 picking helpers are absent here, so the existing Nexus raycaster is retained.
+The supplied `nexus-picking.js` BVH module depends on those helpers and an
+additional worker package; it is not included in this renderer import.
 The separate `nexus3d` implementation is not covered by these browser tests.
 
 ## Browser tests
@@ -44,9 +61,10 @@ Run from the repository root with Node.js 18 or newer:
 node --test tests/nexus-cache.cjs tests/nexus-large-files.cjs
 ```
 
-These 33 cases exercise the actual browser library with DOM/WebGL stubs and the
+These 49 cases exercise the actual browser library with DOM/WebGL stubs and the
 example animation loops. They cover shared requests, cancellation, upload
-budgets/priorities, cache fallback, traversal reuse, and idle upload progress;
+budgets/priorities, cache fallback, traversal reuse, idle upload progress,
+camera projection, LOD hysteresis, bitmap cleanup, and WebGL state restoration;
 they do not perform a visual browser rendering test.
 
 ## Converter tests

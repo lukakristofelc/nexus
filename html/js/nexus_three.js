@@ -117,29 +117,40 @@ function() {
 }
 }
 
+const shaderBindings = new WeakMap();
+const renderSize = new THREE.Vector2();
+const renderViewport = new Float32Array(4);
+
 function onAfterRender(renderer, scene, camera, geometry, material, group) {
 	var gl = renderer.getContext();
 	var instance = geometry.instance;
 	if(!instance || !instance.isReady) return;
-	var s = new THREE.Vector2();
-	renderer.getSize(s);
-	instance.updateView([0, 0, s.width, s.height], 
-	camera.projectionMatrix.elements, 
-	this.modelViewMatrix.elements);
-
-	var program = gl.getParameter(gl.CURRENT_PROGRAM);
-
+	if (!this.visible) return;
+	var program = renderer.properties.get(material).currentProgram?.program || gl.getParameter(gl.CURRENT_PROGRAM);
+	if (!program) return;
+	renderer.getSize(renderSize);
+	renderViewport[2] = renderSize.width;
+	renderViewport[3] = renderSize.height;
+	instance.updateView(renderViewport,
+		camera.projectionMatrix.elements, this.modelViewMatrix.elements);
 
 	var attr = instance.attributes;
-	attr.position = gl.getAttribLocation(program, "position");
-	attr.normal   = gl.getAttribLocation(program, "normal");
-	attr.color    = gl.getAttribLocation(program, "color");
-	attr.uv       = gl.getAttribLocation(program, "uv");
-	attr.size     = gl.getUniformLocation(program, "size");
-	attr.scale    = gl.getUniformLocation(program, "scale");
-	let map_location = gl.getUniformLocation(program, "map")
-	attr.map      = map_location ? gl.getUniform(program, map_location) : null;
-
+	let bindings = shaderBindings.get(program);
+	if (!bindings) {
+		bindings = {
+			position: gl.getAttribLocation(program, "position"),
+			normal: gl.getAttribLocation(program, "normal"),
+			color: gl.getAttribLocation(program, "color"),
+			uv: gl.getAttribLocation(program, "uv"),
+			size: gl.getUniformLocation(program, "size"),
+			scale: gl.getUniformLocation(program, "scale"),
+			map: gl.getUniformLocation(program, "map"),
+		};
+		shaderBindings.set(program, bindings);
+	}
+	Object.assign(attr, bindings);
+	// Sampler units may change between render passes using the same shader.
+	attr.map = bindings.map ? gl.getUniform(program, bindings.map) : 0;
 
 	//hack to detect if threejs using point or triangle shaders
 	if(instance.mesh.face.index)

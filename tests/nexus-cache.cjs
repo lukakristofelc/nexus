@@ -744,3 +744,37 @@ test('texture uploads preserve host bindings and select trilinear/capped anisotr
   assert.ok(h.state.parameters.some(([, key, value]) => key === 'TEXTURE_MIN_FILTER' && value === 'LINEAR_MIPMAP_LINEAR'));
   assert.ok(h.state.parameters.some(([, key, value]) => key === 'aniso' && value === 4));
 });
+
+test('Three.js adapter caches shader locations while refreshing sampler units and viewport', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../html/js/nexus_three.js'), 'utf8');
+  const adapter = source.slice(source.indexOf('const shaderBindings'), source.indexOf('NexusObject.prototype ='));
+  const program = {}, fallbackProgram = {}, sampler = {};
+  let attributes = 0, uniforms = 0, currentProgramReads = 0, mapUnit = 0, width = 800, calls = 0;
+  const gl = { CURRENT_PROGRAM: 1,
+    getParameter() { currentProgramReads++; return fallbackProgram; },
+    getAttribLocation() { return attributes++; },
+    getUniformLocation() { uniforms++; return sampler; },
+    getUniform() { return mapUnit; },
+  };
+  const instance = { isReady: true, attributes: {}, mesh: { face: { index: true } },
+    updateView(viewport) { this.lastViewport = Array.from(viewport); }, render() { calls++; } };
+  const material = { size: 1 };
+  let currentProgram = program;
+  const renderer = { getContext: () => gl, getSize: size => size.set(width, 600),
+    properties: { get: () => ({ currentProgram: { program: currentProgram } }) } };
+  const camera = { projectionMatrix: { elements: [] } };
+  const object = { visible: true, modelViewMatrix: { elements: [] } };
+  const sandbox = { THREE };
+  vm.createContext(sandbox); vm.runInContext(adapter, sandbox);
+  const render = () => sandbox.onAfterRender.call(object, renderer, {}, camera, { instance }, material, null);
+  render(); mapUnit = 3; width = 1000; render();
+  assert.equal(attributes, 4); assert.equal(uniforms, 3);
+  assert.equal(currentProgramReads, 0);
+  assert.equal(instance.attributes.map, 3);
+  assert.deepEqual(instance.lastViewport, [0, 0, 1000, 600]);
+  currentProgram = null; render();
+  assert.equal(currentProgramReads, 1);
+  assert.equal(attributes, 8);
+  object.visible = false; render();
+  assert.equal(calls, 3);
+});
