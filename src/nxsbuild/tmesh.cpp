@@ -59,6 +59,8 @@ void TMesh::load(Soup &soup) {
 		}
 		f.node = triangle.node;
 		f.tex = triangle.tex;
+		f.vertex_colors = triangle.vertex_colors;
+		vertex_colors |= triangle.vertex_colors;
 	}
 
 	//UNIFICATION PROCESS
@@ -131,6 +133,7 @@ void TMesh::save(Soup &soup, quint32 node) {
 		}
 		triangle.node = node;
 		triangle.tex = t.tex;
+		triangle.vertex_colors = t.vertex_colors;
 		soup.push_back(triangle);
 	}
 }
@@ -157,6 +160,7 @@ void TMesh::getTriangles(Triangle *triangles, quint32 node) {
 		}
 		triangle.node = node;
 		triangle.tex = t.tex;
+		triangle.vertex_colors = t.vertex_colors;
 	}
 }
 
@@ -300,6 +304,7 @@ void TMesh::splitSeams(nx::Signature &sig) {
 	std::vector<TVertex> new_vert(vert.size());
 	std::vector<int> new_face;
 	std::vector<int> vert_to_tex(vert.size(), -2);
+	std::vector<bool> vert_to_colors(vert.size(), false);
 	for(auto &f: face) {
 		for(int k = 0; k < 3; k++) {
 			int index = f.V(k) - &*vert.begin();
@@ -315,10 +320,11 @@ void TMesh::splitSeams(nx::Signature &sig) {
 					nv = *f.V(k);
 					nv.T() = f.WT(k);
 					vert_to_tex[index] = f.tex;
+					vert_to_colors[index] = f.vertex_colors;
 					break;
 				}
 
-				if(vert_to_tex[index] == f.tex && nv.T() == f.WT(k))  //found!
+				if(vert_to_tex[index] == f.tex && vert_to_colors[index] == f.vertex_colors && nv.T() == f.WT(k))  //found!
 					break;
 
 				if(next[index] == -1) { //ok we have to add a new one.
@@ -328,6 +334,7 @@ void TMesh::splitSeams(nx::Signature &sig) {
 					next[index] = new_index;
 					next.push_back(-1);
 					vert_to_tex.push_back(f.tex);
+					vert_to_colors.push_back(f.vertex_colors);
 					index = new_index;
 					break;
 				}

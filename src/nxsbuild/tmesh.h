@@ -102,6 +102,7 @@ class TFace: public vcg::Face<
 public:
 	quint32 node;
 	quint32 tex; //texture number where the wedge tex coords refer to.
+	bool vertex_colors = false;
 	bool operator<(const TFace &t) const {
 		return node < t.node;
 	}
@@ -110,6 +111,7 @@ public:
 class TMesh: public vcg::tri::TriMesh<std::vector<TVertex>, std::vector<TFace> > {
 public:
 
+	bool vertex_colors = false;
 	enum Simplification { QUADRICS, EDGE, CLUSTER, RANDOM };
 	void load(Soup &soup);
 	void load(Cloud &soup);
@@ -156,6 +158,20 @@ class MyTriEdgeCollapseQTex: public vcg::tri::TriEdgeCollapseQuadricTex< TMesh, 
 public:
 	typedef  vcg::tri::TriEdgeCollapseQuadricTex< TMesh,  TVertexPair, MyTriEdgeCollapseQTex, vcg::tri::QuadricTexHelper<TMesh> > TECQ;
 	inline MyTriEdgeCollapseQTex(  const TVertexPair &p, int i, vcg::BaseParameterClass *pp) :TECQ(p,i,pp){}
+	void Execute(TMesh &mesh, vcg::BaseParameterClass *pp) {
+		TVertex *a = this->pos.V(0), *b = this->pos.V(1);
+		const vcg::Point3f pa = a->P(), pb = b->P();
+		const vcg::Color4b ca = a->C(), cb = b->C();
+		TECQ::Execute(mesh, pp); // a is deleted; b survives at the optimized position.
+		if(mesh.vertex_colors) {
+			const vcg::Point3f edge = pb - pa;
+			const float length2 = edge.SquaredNorm();
+			float weight = length2 > 0 ? ((b->P() - pa)*edge)/length2 : 0.5f;
+			weight = std::max(0.0f, std::min(1.0f, weight));
+			for(int c = 0; c < 4; ++c)
+				b->C()[c] = static_cast<unsigned char>(ca[c]*(1-weight) + cb[c]*weight + 0.5f);
+		}
+	}
 };
 
 #endif // NX_TMesh_H

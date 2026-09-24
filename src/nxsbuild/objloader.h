@@ -45,6 +45,8 @@ private:
 	QString mtl;
 	VirtualArray<Vertex> vertices;
 	std::vector<float> vtxtuv;
+	std::vector<bool> vertex_has_color;
+	bool has_vertex_colors = false;
 	quint64 n_vertices;
 	quint64 n_triangles;
 	quint64 current_triangle;

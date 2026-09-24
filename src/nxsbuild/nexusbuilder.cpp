@@ -204,6 +204,7 @@ QImage NexusBuilder::extractNodeTex(TMesh &mesh, int level, float &error, float 
 	std::vector<int> box_texture; //which texture each box belongs;
 	std::vector<int> vertex_to_tex(mesh.vert.size(), -1);
 	std::vector<int> vertex_to_box;
+	std::vector<bool> vertex_uses_color(mesh.vert.size(), false);
 
 
 	//find connected pieces of triangles belonging to the same texture
@@ -217,6 +218,7 @@ QImage NexusBuilder::extractNodeTex(TMesh &mesh, int level, float &error, float 
 		int v[3];
 		for(int i = 0; i < 3; i++) {
 			v[i] = face.V(i) - &*mesh.vert.begin();
+			vertex_uses_color[v[i]] = face.vertex_colors && header.signature.vertex.hasColors();
 
 
 			int &t = vertex_to_tex[v[i]];
@@ -321,6 +323,13 @@ QImage NexusBuilder::extractNodeTex(TMesh &mesh, int level, float &error, float 
 	if(needs_fallback)
 		sizes.push_back(vcg::Point2i(fallback_size, fallback_size));
 
+	bool needs_color_fallback = false;
+	for(size_t i = 0; i < vertex_to_box.size(); ++i)
+		needs_color_fallback |= vertex_to_box[i] == -1 && vertex_uses_color[i];
+	const int color_fallback_box = static_cast<int>(sizes.size());
+	if(needs_color_fallback)
+		sizes.push_back(vcg::Point2i(fallback_size, fallback_size));
+
 	//pack boxes;
 	std::vector<vcg::Point2i> mapping;
 	vcg::Point2i maxSize(1096, 1096);
@@ -370,11 +379,13 @@ QImage NexusBuilder::extractNodeTex(TMesh &mesh, int level, float &error, float 
 		if(b == -1) {
 			// Constant coordinates across the face also avoid selecting coarse
 			// mip levels through a large texture-coordinate derivative.
-			const vcg::Point2i &fallback = mapping[fallback_box];
+			const vcg::Point2i &fallback = mapping[vertex_uses_color[i] ? color_fallback_box : fallback_box];
 			uv = vcg::Point2f((fallback[0] + fallback_size / 2 + 0.5f)*pdx,
 			                  (fallback[1] + fallback_size / 2 + 0.5f)*pdy);
 			continue;
 		}
+		// RGB from the scanner is for missing coverage, not a tint on photographs.
+		if(vertex_uses_color[i]) p.C() = vcg::Color4b(255, 255, 255, 255);
 		vcg::Point2i &o = origins[b];
 		vcg::Point2i m = mapping[b];
 
@@ -436,6 +447,10 @@ QImage NexusBuilder::extractNodeTex(TMesh &mesh, int level, float &error, float 
 		QMutexLocker locker(&m_atlas);
 		//	static int boxid = 0;
 		QPainter painter(&image);
+		if(needs_color_fallback) {
+			const vcg::Point2i &fallback = mapping[color_fallback_box];
+			painter.fillRect(fallback[0], fallback[1], fallback_size, fallback_size, QColor(255, 255, 255));
+		}
 		//convert tex coordinates using mapping
 		for(int i = 0; i < boxes.size(); i++) {
 
@@ -614,6 +629,7 @@ void NexusBuilder::processBlock(KDTreeSoup *input, StreamSoup *output, uint bloc
 		for(int i = 0; i < tmp.face.size(); i++) {
 			tmp.face[i].node = mesh.face[i].node;
 			tmp.face[i].tex = mesh.face[i].tex;
+			tmp.face[i].vertex_colors = mesh.face[i].vertex_colors;
 		}
 		tmp.splitSeams(header.signature);
 		if(tmp.vert.size() > 60000) {

@@ -262,8 +262,23 @@ void ObjLoader::cacheVertices() {
 				n_vertices++;
 
 				vcg::Point3d p;
-				int n = sscanf(buffer, "v %lf %lf %lf", &p[0], &p[1], &p[2]);
-				if(n != 3) throw QString("error parsing vertex line %1 while caching").arg(buffer);
+				double rgb[3], extra;
+				int n = sscanf(buffer, "v %lf %lf %lf %lf %lf %lf %lf",
+				               &p[0], &p[1], &p[2], &rgb[0], &rgb[1], &rgb[2], &extra);
+				// The common OBJ RGB extension is v x y z r g b, normalized to [0,1].
+				// A fourth homogeneous coordinate alone is not a color.
+				bool valid_color = n == 6;
+				if(valid_color) {
+					for(int c = 0; c < 3; ++c)
+						valid_color &= std::isfinite(rgb[c]) && rgb[c] >= 0.0 && rgb[c] <= 1.0;
+				}
+				vertex_has_color.push_back(valid_color);
+				if(valid_color) {
+					for(int c = 0; c < 3; ++c)
+						vertex.c[c] = static_cast<unsigned char>(std::lround(rgb[c]*255.0));
+					has_vertex_colors = has_colors = true;
+				}
+				if(n < 3) throw QString("error parsing vertex line %1 while caching").arg(buffer);
 				p -= origin;
 				p[0] *= scale[0];
 				p[1] *= scale[1];
@@ -313,6 +328,12 @@ quint32 ObjLoader::getTriangles(quint32 size, Triangle *faces) {
 
 	if (n_triangles == 0) {
 		cacheVertices();
+		if(has_vertex_colors) {
+			for(size_t i = 0; i < vertex_has_color.size(); ++i) {
+				if(!vertex_has_color[i])
+					vertices[i].c[0] = vertices[i].c[1] = vertices[i].c[2] = 127;
+			}
+		}
 		cacheTextureUV();
 	}
 
@@ -478,6 +499,7 @@ quint32 ObjLoader::getTriangles(quint32 size, Triangle *faces) {
 			for (int m = 0; m <= valence - 3; m++) {
 
 				Triangle &current = faces[count];
+				current.vertex_colors = has_vertex_colors;
 				bool valid_uv = current_texture_id >= 0;
 
 				for (int k = 0; k < 3; k++) {
@@ -502,7 +524,7 @@ quint32 ObjLoader::getTriangles(quint32 size, Triangle *faces) {
 					for (int k = 0; k < 3; k++)
 						current.vertices[k].t[0] = current.vertices[k].t[1] = 0.0f;
 				}
-				if (has_colors && current_color) {
+				if (!has_vertex_colors && has_colors && current_color) {
 					current.vertices[0].c[0] = RED(current_color);
 					current.vertices[0].c[1] = GREEN(current_color);
 					current.vertices[0].c[2] = BLUE(current_color);
