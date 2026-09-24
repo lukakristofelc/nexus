@@ -153,7 +153,7 @@ function onAfterRender(renderer, scene, camera, geometry, material, group) {
 		instance.pointscale = 2.0;
 
 	instance.render();
-	Nexus.updateCache(gl);
+	// Call Nexus.endFrame(gl) once after rendering all meshes; see the HTML examples.
 }
 
 

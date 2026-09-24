@@ -17,9 +17,23 @@ decoded GPU texture accounting, shared textures, request cancellation/retries,
 and camera-dependent cache priorities. The cache retains at least one loaded
 root per mesh, a helper required by the imported eviction logic.
 
-The `nexus_three.js` render hook still calls `Nexus.updateCache`. Removing that
-call in cloud-test depended on its CustomViewer calling `Nexus.endFrame` after
-rendering all meshes. That application integration is not part of this import.
+The follow-up browser patch shares in-flight geometry/texture downloads, makes
+IndexedDB optional, separates download slots from pending processing, and queues
+GPU uploads under a 4 ms frame budget. Individual GPU calls cannot be interrupted.
+Traversal reuses arrays, and eviction scans resident nodes only.
+
+Call `Nexus.beginFrame(gl)` before rendering the scene and `Nexus.endFrame(gl)`
+after all meshes have rendered. Continue calling `endFrame` on idle animation
+ticks so queued uploads can complete and request a redraw. The HTML examples
+demonstrate this and reset Three.js state after Nexus uploads. `updateCache`
+alone no longer uploads decoded data, and the per-object `nexus_three.js` hook
+no longer performs cache admission.
+
+`Nexus.getNodeBuffer(mesh, id)` shares geometry reads with other consumers and
+returns the original on-disk buffer; compressed nodes still need decoding.
+`Nexus.getStats(gl)` reports queue sizes, cache bytes, and stage timings;
+`Nexus.resetStats(gl)` clears the timing counters. Cloud-test's asynchronous
+picking helpers are absent here, so the existing Nexus raycaster is retained.
 The separate `nexus3d` implementation is not covered by these browser tests.
 
 ## Browser tests
@@ -30,8 +44,10 @@ Run from the repository root with Node.js 18 or newer:
 node --test tests/nexus-cache.cjs tests/nexus-large-files.cjs
 ```
 
-These 21 cases exercise the actual browser library with DOM/WebGL stubs; they
-do not perform a visual browser rendering test.
+These 33 cases exercise the actual browser library with DOM/WebGL stubs and the
+example animation loops. They cover shared requests, cancellation, upload
+budgets/priorities, cache fallback, traversal reuse, and idle upload progress;
+they do not perform a visual browser rendering test.
 
 ## Converter tests
 

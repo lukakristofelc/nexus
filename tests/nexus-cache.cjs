@@ -441,3 +441,24 @@ test('traversal reuses storage and clears pruned nodes before revisiting', () =>
   arrays.forEach((array, i) => assert.equal(array, [instance.selected, instance.visited,
     instance.blocked, instance.touched, instance.renderList, instance.visitQueue][i]));
 });
+
+for (const name of ['raycast.html', 'threejs.html']) {
+  test(`${name} drains idle uploads and preserves redraw requests`, () => {
+    const html = fs.readFileSync(path.join(__dirname, '../html', name), 'utf8');
+    const animate = html.match(/function animate\(\) \{[\s\S]*?\n\}/)[0];
+    const calls = [];
+    const sandbox = {
+      redraw: true, scene: {}, camera: {}, requestAnimationFrame() {}, controls: { update() {} },
+      renderer: { getContext: () => ({}), render() { calls.push('render'); }, resetState() { calls.push('reset'); } },
+      Nexus: { beginFrame() { calls.push('begin'); }, endFrame() { calls.push('end'); sandbox.redraw = true; } },
+    };
+    vm.createContext(sandbox);
+    vm.runInContext(animate + '\nanimate();', sandbox);
+    assert.deepEqual(calls, ['begin', 'render', 'end', 'reset']);
+    assert.equal(sandbox.redraw, true);
+    calls.length = 0; sandbox.redraw = false;
+    vm.runInContext('animate();', sandbox);
+    assert.deepEqual(calls, ['end', 'reset']);
+    assert.equal(sandbox.redraw, true);
+  });
+}

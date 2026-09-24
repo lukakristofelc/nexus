@@ -158,10 +158,15 @@ function animate() {
 
 	controls.update();
 
+	var gl = renderer.getContext();
 	if(redraw) {
-		renderer.render(scene, camera);
 		redraw = false;
+		Nexus.beginFrame(gl);
+		renderer.render(scene, camera);
 	}
+	// Drain decoded uploads even while the scene is otherwise idle.
+	Nexus.endFrame(gl);
+	renderer.resetState();
 }
 
 animate();
