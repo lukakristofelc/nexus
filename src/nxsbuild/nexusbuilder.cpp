@@ -212,6 +212,8 @@ QImage NexusBuilder::extractNodeTex(TMesh &mesh, int level, float &error, float 
 	components.init(mesh.vert.size());
 
 	for(auto &face: mesh.face) {
+		if(face.tex < atlas.pyramids.size() && atlas.pyramids[face.tex].fully_transparent)
+			face.tex = -1;
 		int v[3];
 		for(int i = 0; i < 3; i++) {
 			v[i] = face.V(i) - &*mesh.vert.begin();
@@ -255,8 +257,8 @@ QImage NexusBuilder::extractNodeTex(TMesh &mesh, int level, float &error, float 
 		if(t[1] != 1.0)
 			t[1] = fmod(t[1], 1.0);
 
-		if(t[0] != 0.0f || t[1] != 0.0f)
-			box.Add(t);
+		// (0, 0) is a valid UV, including for constant-color texture islands.
+		box.Add(t);
 	}
 
 	//erase boxes assigned to no texture, and remap vertex_to_box
@@ -310,6 +312,15 @@ QImage NexusBuilder::extractNodeTex(TMesh &mesh, int level, float &error, float 
 		if(size[1] <= 0) size[1] = 1;
 	}
 
+	// Reserve a real atlas region for untextured faces. The background at
+	// (0, 0) is not safe: the packer may place a texture there. Padding keeps
+	// the sample away from JPEG blocks and neighboring texture filtering.
+	const bool needs_fallback = std::find(vertex_to_box.begin(), vertex_to_box.end(), -1) != vertex_to_box.end();
+	const int fallback_box = static_cast<int>(sizes.size());
+	const int fallback_size = 32;
+	if(needs_fallback)
+		sizes.push_back(vcg::Point2i(fallback_size, fallback_size));
+
 	//pack boxes;
 	std::vector<vcg::Point2i> mapping;
 	vcg::Point2i maxSize(1096, 1096);
@@ -357,7 +368,11 @@ QImage NexusBuilder::extractNodeTex(TMesh &mesh, int level, float &error, float 
 		auto &uv = p.T().P();
 		int b = vertex_to_box[i];
 		if(b == -1) {
-			uv = vcg::Point2f(0.0f, 0.0f);
+			// Constant coordinates across the face also avoid selecting coarse
+			// mip levels through a large texture-coordinate derivative.
+			const vcg::Point2i &fallback = mapping[fallback_box];
+			uv = vcg::Point2f((fallback[0] + fallback_size / 2 + 0.5f)*pdx,
+			                  (fallback[1] + fallback_size / 2 + 0.5f)*pdy);
 			continue;
 		}
 		vcg::Point2i &o = origins[b];
@@ -410,9 +425,7 @@ QImage NexusBuilder::extractNodeTex(TMesh &mesh, int level, float &error, float 
 	//compute area waste
 	for(int i = 0; i < mesh.face.size(); i++) {
 		auto &face = mesh.face[i];
-		int b = vertex_to_box[face.V(0) - &(mesh.vert[0])];
-		vcg::Point2i &o = origins[b];
-		vcg::Point2i m = mapping[b];
+		// Untextured faces have no box (b == -1); only the UV area is needed.
 		auto V0 = face.V(0)->T().P();
 		auto V1 = face.V(1)->T().P();
 		auto V2 = face.V(2)->T().P();

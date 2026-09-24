@@ -30,6 +30,7 @@ public:
 //manage a pyramid of splitted textured
 class TexPyramid {
 public:
+	bool fully_transparent = false;
 	TexAtlas *collection;
 	std::vector<TexLevel> levels;
 

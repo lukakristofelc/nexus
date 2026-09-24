@@ -21,6 +21,7 @@ for more details.
 #include <QTextStream>
 #include <QRegularExpression>
 #include <iostream>
+#include <cmath>
 
 
 
@@ -254,6 +255,10 @@ void ObjLoader::cacheVertices() {
 
 				vertices.resize(n_vertices+1);
 				Vertex &vertex = vertices[n_vertices];
+				// OBJ positions do not necessarily have material colors or UVs.
+				vertex = Vertex{};
+				for (int channel = 0; channel < 4; ++channel)
+					vertex.c[channel] = 255;
 				n_vertices++;
 
 				vcg::Point3d p;
@@ -473,16 +478,30 @@ quint32 ObjLoader::getTriangles(quint32 size, Triangle *faces) {
 			for (int m = 0; m <= valence - 3; m++) {
 
 				Triangle &current = faces[count];
+				bool valid_uv = current_texture_id >= 0;
 
 				for (int k = 0; k < 3; k++) {
 					current.vertices[k] = vertices[face1[m * 3 + k]];
 					/*for (int j = 0; normal1[m * 3 + k] >= 0 && j < 3; j++)
 						current.vertices[k].n[j] = vnormals[normal1[m * 3 + k] * 3 + j];*/
-					if (vtxt1[m * 3 + k] >= 0)
-						for (int j = 0; j < 2; j++)
-							current.vertices[k].t[j] = vtxtuv[vtxt1[m * 3 + k] * 2 + j];
+					const int uv_index = vtxt1[m * 3 + k];
+					if (uv_index < 0 || static_cast<size_t>(uv_index) >= vtxtuv.size() / 2) {
+						valid_uv = false;
+					} else {
+						for (int j = 0; j < 2; j++) {
+							const float uv = vtxtuv[static_cast<size_t>(uv_index) * 2 + j];
+							if (!std::isfinite(uv)) valid_uv = false;
+							current.vertices[k].t[j] = uv;
+						}
+					}
 				}
-				current.tex = current_texture_id;
+				// A triangle needs all three UVs. Never interpolate missing coordinates
+				// into an unrelated texture, or pass uninitialized/NaN UVs to VCGLib.
+				current.tex = valid_uv ? current_texture_id : -1;
+				if (!valid_uv) {
+					for (int k = 0; k < 3; k++)
+						current.vertices[k].t[0] = current.vertices[k].t[1] = 0.0f;
+				}
 				if (has_colors && current_color) {
 					current.vertices[0].c[0] = RED(current_color);
 					current.vertices[0].c[1] = GREEN(current_color);

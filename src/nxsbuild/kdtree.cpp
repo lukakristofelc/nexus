@@ -363,7 +363,7 @@ void KDTreeSoup::pushTriangle(Triangle &t) {
 	} while(1);
 }
 double KDTreeSoup::weight(Triangle &t) {
-	if(textures.size() == 0)
+	if(t.tex < 0 || static_cast<size_t>(t.tex) >= textures.size())
 		return 0;
 	Vertex &v0 = t.vertices[0];
 	Vertex &v1 = t.vertices[1];

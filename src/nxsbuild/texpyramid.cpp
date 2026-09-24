@@ -83,6 +83,7 @@ QImage TexLevel::read(QRect region) {
 	int ey = (region.y() + region.height() - 1)/side;
 
 	QImage image(region.size(), QImage::Format_RGB32);
+	image.fill(QColor(127, 127, 127));
 
 	QPainter painter(&image);
 	for(int y = sy; y <= ey; y++) {
@@ -121,8 +122,8 @@ void TexLevel::build(TexLevel &parent) {
 	int side = collection->side;
 	float scale = collection->scale;
 	tex = parent.tex;
-	width = floor(parent.width * scale);
-	height = floor(parent.height * scale);
+	width = std::max(1, static_cast<int>(floor(parent.width * scale)));
+	height = std::max(1, static_cast<int>(floor(parent.height * scale)));
 
 	tilew = 1 + (width-1)/side;
 	tileh = 1 + (height-1)/side;
@@ -169,6 +170,32 @@ void TexLevel::build(QImage img) {
 
 void TexPyramid::init(int tex, TexAtlas *c, QImage &texture) {
 	collection = c;
+	// Some exporters use a transparent 1x1 PNG for faces without coverage.
+	// Remember fully transparent textures so these faces get a padded atlas
+	// fallback instead of a single texel contaminated by JPEG/filtering.
+	fully_transparent = false;
+	if(texture.hasAlphaChannel()) {
+		QImage rgba = texture.convertToFormat(QImage::Format_ARGB32);
+		fully_transparent = true;
+		for(int y = 0; y < rgba.height() && fully_transparent; ++y) {
+			const QRgb *row = reinterpret_cast<const QRgb *>(rgba.constScanLine(y));
+			for(int x = 0; x < rgba.width(); ++x) {
+				if(qAlpha(row[x]) != 0) {
+					fully_transparent = false;
+					break;
+				}
+			}
+		}
+		// NXS atlases are JPEG: composite transparency onto a defined background
+		// before converting to RGB or writing intermediate pyramid tiles.
+		QImage opaque(texture.size(), QImage::Format_RGB32);
+		opaque.fill(QColor(127, 127, 127));
+		{
+			QPainter painter(&opaque);
+			painter.drawImage(0, 0, rgba);
+		}
+		texture = opaque;
+	}
 	int size = std::max(texture.width(), texture.height());
 	int count = 1;
 	while(size > collection->side) {
@@ -180,7 +207,8 @@ void TexPyramid::init(int tex, TexAtlas *c, QImage &texture) {
 	for(int i = 0; i < levels.size(); i++) {
 		TexLevel &level = levels[i];
 		level.init(tex, collection, texture, i);
-		texture = texture.scaled(round(texture.width()*collection->scale), round(texture.height()*collection->scale));
+		texture = texture.scaled(std::max(1, static_cast<int>(round(texture.width()*collection->scale))),
+		                         std::max(1, static_cast<int>(round(texture.height()*collection->scale))));
 	}
 }
 
