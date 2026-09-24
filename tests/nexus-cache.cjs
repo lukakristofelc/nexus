@@ -5,26 +5,28 @@ const vm = require('node:vm');
 const { test } = require('node:test');
 
 function harness(webgl2 = false) {
-  const images = [], revoked = [], uploads = [], deleted = [];
+  const images = [], revoked = [], uploads = [], deleted = [], requests = [], bufferUploads = [];
+  let now = 0, uploadCost = 0;
   class WebGL1 {}
   const gl = webgl2 ? {} : new WebGL1();
   Object.assign(gl, {
     isTexture() {}, isContextLost: () => false, getParameter: () => false,
-    createBuffer: () => ({}), bindBuffer() {}, bufferData() {}, deleteBuffer() {},
+    createBuffer: () => ({}), bindBuffer() {},
+    bufferData(...args) { bufferUploads.push(args[1]); now += uploadCost; }, deleteBuffer() {},
     createTexture: () => ({}), bindTexture() {}, pixelStorei() {}, texParameteri() {},
-    texImage2D(...args) { uploads.push(args.at(-1)); }, generateMipmap() {},
+    texImage2D(...args) { uploads.push(args.at(-1)); now += uploadCost; }, generateMipmap() {},
     deleteTexture(t) { deleted.push(t); },
   });
   const sandbox = {
-    console, WebGLRenderingContext: WebGL1,
+    console, performance: { now: () => now }, WebGLRenderingContext: WebGL1,
     URL: { createObjectURL: () => `blob:${images.length}`, revokeObjectURL: u => revoked.push(u) },
     document: {
       getElementsByTagName: () => [],
       createElement() { const img = {}; images.push(img); return img; },
     },
     XMLHttpRequest: class {
-      constructor() { this.readyState = 1; }
-      open() {} setRequestHeader() {} send() {}
+      constructor() { this.readyState = 1; requests.push(this); }
+      open(method, url) { this.url = url; } setRequestHeader() {} send() {}
       abort() { this.readyState = 4; this.onabort?.(); }
       complete(response) {
         this.readyState = 4; this.status = 206; this.response = response; this.onload();
@@ -67,12 +69,20 @@ function harness(webgl2 = false) {
   function request(m, id, error) { candidate(m, id, error); Nexus.updateCache(gl); }
   function geometry(m, id) { m.georeq[id].complete(new ArrayBuffer(512)); }
   function texture(m, id, width = 4, height = 4) {
-    m.texreq[id].complete({});
+    const tex = m.patches[m.nfirstpatch[id] * 3 + 2];
+    m.texreq[tex].complete({ size: 512 });
     const img = images.at(-1); Object.assign(img, { width, height }); img.onload();
   }
-  function complete(m, id, width, height) { geometry(m, id); texture(m, id, width, height); }
+  function frame() { Nexus.endFrame(gl); }
+  function complete(m, id, width, height) {
+    geometry(m, id);
+    const tex = m.patches[m.nfirstpatch[id] * 3 + 2];
+    if (m.texreq[tex]) texture(m, id, width, height);
+    frame();
+  }
   return { Nexus, gl, context, mesh, candidate, request, geometry, texture, complete,
-    images, revoked, uploads, deleted };
+    images, revoked, uploads, deleted, requests, bufferUploads, sandbox, frame,
+    setUploadCost(ms) { uploadCost = ms; } };
 }
 
 for (const [name, webgl2, width, height, bytes] of [
@@ -146,15 +156,18 @@ test('cancels pending image decode after geometry finishes; stale callbacks cann
   assert.equal(h.context.pending, 0);
 });
 
-test('a failed shared-atlas request completes if another node already uploaded it', () => {
+test('shared-atlas decode retries once for all waiters and uploads once', () => {
   const h = harness(), m = h.mesh([0, 0, 1]);
   h.request(m, 0); h.request(m, 1);
-  h.geometry(m, 1); m.texreq[1].complete({});
-  const failed = h.images.at(-1);
-  h.complete(m, 0);
-  failed.onerror();
+  h.geometry(m, 0); h.geometry(m, 1);
+  assert.equal(h.requests.filter(r => r.responseType === 'blob').length, 1);
+  m.texreq[0].complete({ size: 512 }); h.images.at(-1).onerror();
+  assert.equal(h.requests.filter(r => r.responseType === 'blob').length, 2);
+  h.texture(m, 0); h.frame();
+  assert.equal(m.status[0], 1);
   assert.equal(m.status[1], 1);
   assert.equal(h.context.pending, 0);
+  assert.equal(h.context.downloading, 0);
   assert.equal(m.texref[0], 2);
   assert.equal(h.uploads.length, 1);
 });
@@ -234,9 +247,197 @@ test('an oversized candidate does not starve smaller candidates', () => {
 
 test('untextured geometry is finite and balances the cache on flush', () => {
   const h = harness(), m = h.mesh([0], false);
-  h.request(m, 0); h.geometry(m, 0);
+  h.request(m, 0); h.geometry(m, 0); h.frame();
   assert.equal(h.context.pending, 0);
   assert.equal(h.context.cacheSize, 42);
   h.Nexus.flush(h.context, m);
   assert.equal(h.context.cacheSize, 0);
+});
+
+test('queues geometry and textures until endFrame and reports stage statistics', () => {
+  const h = harness(), m = h.mesh();
+  h.request(m, 0); h.geometry(m, 0); h.texture(m, 0);
+  assert.equal(h.uploads.length, 0);
+  assert.equal(h.bufferUploads.length, 0);
+  const stats = h.Nexus.getStats(h.gl);
+  assert.equal(stats.downloading, 0);
+  assert.equal(stats.pending, 1);
+  assert.equal(stats.queuedUploads, 2);
+  stats.stages.geometryDownload.count = 999;
+  assert.equal(h.Nexus.getStats(h.gl).stages.geometryDownload.count, 1);
+  h.frame();
+  assert.equal(h.context.pending, 0);
+  assert.equal(h.context.residentNodes.size, 1);
+  assert.equal(h.Nexus.getStats(h.gl).stages.textureUpload.bytes, 84);
+  h.Nexus.resetStats(h.gl);
+  assert.equal(Object.keys(h.Nexus.getStats(h.gl).stages).length, 0);
+  h.Nexus.flush(h.context, m);
+  assert.equal(h.context.residentNodes.size, 0);
+});
+
+test('upload budget yields between tasks and uses the latest camera priorities', () => {
+  const h = harness(), m = h.mesh([0, 1], false);
+  h.setUploadCost(5);
+  h.request(m, 0, 100); h.request(m, 1, 1);
+  h.geometry(m, 0); h.geometry(m, 1);
+  h.Nexus.beginFrame(h.gl);
+  m.frames[1] = h.context.frame;
+  h.frame();
+  assert.equal(m.status[1], 1);
+  assert.ok(m.status[0] > 1);
+  assert.equal(h.context.uploads.length, 1);
+  h.frame();
+  assert.equal(m.status[0], 1);
+  assert.equal(h.context.uploads.length, 0);
+});
+
+test('shared textures inherit the newest waiter priority before GPU upload', () => {
+  const h = harness(), m = h.mesh([0, 0]);
+  h.setUploadCost(5);
+  h.request(m, 0, 100); h.request(m, 1, 1);
+  h.geometry(m, 0); h.geometry(m, 1); h.texture(m, 0);
+  h.Nexus.beginFrame(h.gl);
+  m.frames[1] = h.context.frame;
+  h.frame(); // geometry for node 1
+  assert.equal(h.uploads.length, 0);
+  h.frame(); // shared texture ahead of old-view geometry for node 0
+  assert.equal(h.uploads.length, 1);
+  assert.equal(m.status[1], 1);
+  assert.ok(m.status[0] > 1);
+  h.frame();
+  assert.equal(h.context.pending, 0);
+});
+
+test('download slots refill before uploads while processing stays bounded', () => {
+  const h = harness(), m = h.mesh(Array.from({ length: 20 }, (_, i) => i), false);
+  for (let i = 0; i < 20; i++) h.candidate(m, i);
+  h.Nexus.updateCache(h.gl);
+  assert.equal(h.context.downloading, 6);
+  assert.equal(h.context.pending, 6);
+  for (let i = 0; i < 6; i++) h.geometry(m, i);
+  assert.equal(h.context.downloading, 6);
+  assert.equal(h.context.pending, 12);
+  for (let i = 6; i < 12; i++) h.geometry(m, i);
+  assert.equal(h.context.downloading, 0);
+  assert.equal(h.context.pending, 12);
+  assert.equal(m.status[12], 0);
+  h.Nexus.flush(h.context, m);
+  assert.equal(h.context.pending, 0);
+  assert.equal(h.context.downloading, 0);
+  assert.equal(h.context.uploads.length, 0);
+  assert.equal(h.context.cacheSize, 0);
+});
+
+test('flush cancels queued uploads before either GPU allocation', () => {
+  const h = harness(), m = h.mesh();
+  h.request(m, 0); h.geometry(m, 0); h.texture(m, 0);
+  h.Nexus.flush(h.context, m); h.frame();
+  assert.equal(h.uploads.length, 0);
+  assert.equal(h.bufferUploads.length, 0);
+  assert.equal(h.context.uploads.length, 0);
+  assert.equal(h.context.downloading, 0);
+  assert.equal(h.context.cacheSize, 0);
+});
+
+test('picking shares geometry requests and survives cancellation by rendering', async () => {
+  const h = harness(), m = h.mesh([0], false);
+  h.request(m, 0);
+  const request = m.georeq[0];
+  const picked = h.Nexus.getNodeBuffer(m, 0);
+  assert.equal(h.requests.length, 1);
+  h.Nexus.flush(h.context, m);
+  assert.equal(request.readyState, 1);
+  const bytes = new ArrayBuffer(512);
+  request.complete(bytes);
+  assert.equal(await picked, bytes);
+  h.frame();
+  assert.equal(h.bufferUploads.length, 0);
+  assert.equal(h.context.pending, 0);
+});
+
+test('picking reuses resident uncompressed bytes without modifying attribute order', async () => {
+  const h = harness(), m = h.mesh([0]);
+  // Exercise the renderer's normal/color reordering in its separate GPU copy.
+  m.vertex.normal = m.vertex.color = true;
+  m.vsize = 30;
+  h.request(m, 0);
+  const buffer = new ArrayBuffer(512);
+  const original = new Uint8Array(buffer);
+  original.forEach((_, i) => { original[i] = i % 251; });
+  const expected = original.slice();
+  const picked = h.Nexus.getNodeBuffer(m, 0);
+  m.georeq[0].complete(buffer); h.texture(m, 0); h.frame();
+  assert.equal(await picked, buffer);
+  const count = h.requests.length;
+  assert.equal(await h.Nexus.getNodeBuffer(m, 0), buffer);
+  assert.equal(h.requests.length, count);
+  assert.deepEqual(original, expected);
+});
+
+test('warm IndexedDB waits for opening and uses numeric geometry/atlas keys', async () => {
+  const h = harness(), m = h.mesh([0, 0]);
+  const reads = [];
+  let opened;
+  m.dbReady = new Promise(resolve => { opened = resolve; });
+  h.request(m, 1);
+  assert.equal(h.requests.length, 0);
+  const db = { transaction(store, mode) {
+    assert.equal(mode, 'readonly');
+    return { objectStore() { return { get(key) {
+      reads.push([store, key]);
+      const request = { result: store === 'mesh' ? new ArrayBuffer(512) : { size: 512 } };
+      queueMicrotask(() => request.onsuccess());
+      return request;
+    } }; } };
+  } };
+  m.db = db; opened(db);
+  await new Promise(resolve => setImmediate(resolve));
+  Object.assign(h.images[0], { width: 4, height: 4 }); h.images[0].onload();
+  h.frame();
+  assert.equal(m.status[1], 1);
+  assert.deepEqual(reads, [['tex', 0], ['mesh', 1]]);
+  assert.equal(h.requests.length, 0);
+});
+
+test('unavailable IndexedDB and HTTP failures fall back and release request slots', async () => {
+  const h = harness(), m = h.mesh([0], false);
+  m.db = { transaction() { throw new Error('Database closed'); } };
+  h.request(m, 0);
+  for (let i = 0; i < 4; i++) {
+    const request = m.georeq[0];
+    request.readyState = 4; request.status = 503; request.onload();
+  }
+  assert.equal(m.status[0], 0);
+  assert.equal(h.context.pending, 0);
+  assert.equal(h.context.downloading, 0);
+  assert.equal(h.context.cacheSize, 0);
+  const picked = h.Nexus.getNodeBuffer(m, 0);
+  const request = m.georeq[0];
+  request.status = 404; request.onload();
+  await assert.rejects(picked, /Geometry download failed/);
+});
+
+test('traversal reuses storage and clears pruned nodes before revisiting', () => {
+  const h = harness(), m = h.mesh([0, 1], false);
+  h.request(m, 0); h.geometry(m, 0); h.frame();
+  h.request(m, 1); h.geometry(m, 1); h.frame();
+  m.nroots = 2;
+  m.nerrors[0] = m.nerrors[1] = 100;
+  m.nspheres[3] = m.nspheres[4] = m.nspheres[8] = m.nspheres[9] = 1;
+  const instance = new h.Nexus.Instance(h.gl);
+  Object.assign(instance, { mesh: m, context: h.context, mode: 'FILL', currentResolution: 1,
+    viewpoint: [0, 0, 10], planes: new Float32Array(24) });
+  instance.traversal();
+  const arrays = [instance.selected, instance.visited, instance.blocked,
+    instance.touched, instance.renderList, instance.visitQueue];
+  assert.deepEqual(Array.from(instance.renderList.subarray(0, instance.renderCount)), [0, 1]);
+  instance.viewpoint[2] = 1000;
+  instance.traversal();
+  assert.equal(instance.selected[1], 0);
+  assert.deepEqual(Array.from(instance.renderList.subarray(0, instance.renderCount)), [0]);
+  instance.viewpoint[2] = 10;
+  instance.traversal();
+  assert.equal(instance.selected[1], 1);
+  arrays.forEach((array, i) => assert.equal(array, [instance.selected, instance.visited,
+    instance.blocked, instance.touched, instance.renderList, instance.visitQueue][i]));
 });
