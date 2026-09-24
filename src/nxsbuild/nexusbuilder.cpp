@@ -666,13 +666,14 @@ void NexusBuilder::processBlock(KDTreeSoup *input, StreamSoup *output, uint bloc
 
 				output_pixels += nodetex.width()*nodetex.height();
 
-				QImageWriter writer(&nodeTex, "jpg");
-				writer.setQuality(tex_quality);
+				QImageWriter writer(&nodeTex, losslessTextures ? "png" : "jpg");
+				if(!losslessTextures) writer.setQuality(tex_quality);
 #if QT_VERSION >= QT_VERSION_CHECK(5, 5, 0)
 				writer.setOptimizedWrite(true);
 				writer.setProgressiveScanWrite(true);
 #endif
-				writer.write(nodetex);
+				if(!writer.write(nodetex))
+					throw QString("Could not encode node texture: ") + writer.errorString();
 
 				quint64 size = pad(nodeTex.size());
 				nodeTex.resize(size);

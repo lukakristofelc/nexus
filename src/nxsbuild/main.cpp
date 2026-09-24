@@ -65,6 +65,7 @@ int main(int argc, char *argv[]) {
 	bool no_colors = false;
 	bool no_texcoords = false;
 	bool useOrigTex = false;
+	bool losslessTextures = false;
 	bool create_pow_two_tex = false;
 	bool deepzoom = false;
 
@@ -104,7 +105,8 @@ int main(int argc, char *argv[]) {
 				  "Different settings might help with very uneven distribution of geometry.", &adaptive);
 
 	opt.addOption('v', "vertex quantization", "vertex quantization grid size (might be approximated)", &vertex_quantization);
-	opt.addOption('q', "texture quality", "JPEG texture quality [0-100], default 95", &tex_quality);
+	opt.addOption('q', "texture quality", "JPEG texture quality [0-100], default 95 (ignored with -L)", &tex_quality);
+	opt.addSwitch('L', "lossless-textures", "encode node atlases as lossless PNG; preserve source pixels at full detail", &losslessTextures);
 
 	//format options
 	opt.addSwitch('p', "point cloud", "generate a multiresolution point cloud (needed only to discard faces)", &point_cloud);
@@ -126,6 +128,12 @@ int main(int argc, char *argv[]) {
 	//ts specific options
 	opt.addOption('K', "colormap", "for .ts files: property:colormap such as temperature:viridis (or plasma, spectral)", &colormap);
 	opt.parse();
+
+#if QT_VERSION >= QT_VERSION_CHECK(6, 0, 0)
+	// A 16K source is 1 GiB decoded. Do not impose Qt's unrelated image
+	// allocation cap on full-resolution builds; Nexus manages its tile cache.
+	if(losslessTextures) QImageReader::setAllocationLimit(0);
+#endif
 
 	//Check parameters are correct
 	QStringList inputs = opt.arguments;
@@ -311,6 +319,7 @@ int main(int argc, char *argv[]) {
 		if(deepzoom)
 			builder.header.signature.flags |= nx::Signature::Flags::DEEPZOOM;
 		builder.tex_quality = tex_quality;
+		builder.losslessTextures = losslessTextures;
 		bool success = builder.initAtlas(stream->textures);
 		if(!success) {
 			cerr << "Exiting" << endl;

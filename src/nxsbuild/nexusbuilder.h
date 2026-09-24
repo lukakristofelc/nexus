@@ -137,6 +137,7 @@ public:
 	float scaling;
 	bool useNodeTex; //use node textures
 	int tex_quality;
+	bool losslessTextures = false; // PNG atlases; geometry LOD previews still use the texture pyramid
 	int max_node_triangles = 32000;
 	bool createPowTwoTex;
 	bool deepzoom = false; //use deepzoom style where each node is in a different file.

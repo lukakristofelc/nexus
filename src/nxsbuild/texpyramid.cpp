@@ -186,7 +186,7 @@ void TexPyramid::init(int tex, TexAtlas *c, QImage &texture) {
 				}
 			}
 		}
-		// NXS atlases are JPEG: composite transparency onto a defined background
+		// The opaque mesh renderer needs transparency composited onto a defined background
 		// before converting to RGB or writing intermediate pyramid tiles.
 		QImage opaque(texture.size(), QImage::Format_RGB32);
 		opaque.fill(QColor(127, 127, 127));
@@ -217,6 +217,10 @@ bool TexPyramid::init(int tex, TexAtlas *c, LoadTexture &file) {
 	bool success = img.load(file.filename);
 	if(!success)
 		return false;
+	// Feed the actual dimensions back to spatial partitioning so high-resolution
+	// textures produce appropriately sized nodes instead of oversized atlases.
+	file.width = img.width();
+	file.height = img.height();
 	init(tex, c, img);
 	return true;
 
@@ -324,11 +328,15 @@ void TexAtlas::pruneCache() {
 		auto it = ram.find(index);
 		cache_size -= 4*(it->second.image.width())*(it->second.image.height());
 		if(disk.find(index) == disk.end()) {
+			if(!storage.isOpen() && !storage.open())
+				throw QString("Could not open texture cache");
 			DiskData d;
 			d.offset = storage.pos();
 			d.w = it->second.image.width();
 			d.h = it->second.image.height();
-			it->second.image.save(&storage, "jpg", quality);
+			// Cache eviction must never change pixels, including full-resolution tiles.
+			if(!it->second.image.save(&storage, "png"))
+				throw QString("Could not write lossless texture cache tile");
 			d.size = storage.pos() - d.offset;
 			disk[index] = d;
 		}
