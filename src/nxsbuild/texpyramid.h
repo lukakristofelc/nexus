@@ -1,6 +1,7 @@
 #ifndef TEXPYRAMID_H
 #define TEXPYRAMID_H
 
+#include <set>
 #include <QRect>
 #include <QString>
 #include <QImage>
@@ -31,6 +32,9 @@ public:
 class TexPyramid {
 public:
 	bool fully_transparent = false;
+	QString filename;
+	int source_levels = 1;
+	QImage imageAtLevel(int level);
 	TexAtlas *collection;
 	std::vector<TexLevel> levels;
 
@@ -76,6 +80,11 @@ public:
 	};
 
 	const int side = 4096;
+	bool regional = false;
+	int tileSide() const { return regional ? 256 : side; }
+	std::set<Index> requested;
+	void request(int tex, int level, QRect region);
+	void prepare(int level);
 	std::vector<TexPyramid> pyramids;
 	float scale = 0.70710678;
 	int quality = 92;

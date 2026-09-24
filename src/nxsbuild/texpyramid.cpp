@@ -75,7 +75,7 @@ bool TexLevel::init(int t, TexAtlas *c, LoadTexture &texture, int _level = 0) {
 }
 
 QImage TexLevel::read(QRect region) {
-	int side = collection->side;
+	int side = collection->tileSide();
 
 	int sx = region.x()/side;
 	int sy = region.y()/side;
@@ -168,8 +168,7 @@ void TexLevel::build(QImage img) {
 }*/
 
 
-void TexPyramid::init(int tex, TexAtlas *c, QImage &texture) {
-	collection = c;
+static void makeOpaque(QImage &texture, bool &fully_transparent) {
 	// Some exporters use a transparent 1x1 PNG for faces without coverage.
 	// Remember fully transparent textures so these faces get a padded atlas
 	// fallback instead of a single texel contaminated by JPEG/filtering.
@@ -196,6 +195,11 @@ void TexPyramid::init(int tex, TexAtlas *c, QImage &texture) {
 		}
 		texture = opaque;
 	}
+}
+
+void TexPyramid::init(int tex, TexAtlas *c, QImage &texture) {
+	collection = c;
+	makeOpaque(texture, fully_transparent);
 	int size = std::max(texture.width(), texture.height());
 	int count = 1;
 	while(size > collection->side) {
@@ -213,6 +217,33 @@ void TexPyramid::init(int tex, TexAtlas *c, QImage &texture) {
 }
 
 bool TexPyramid::init(int tex, TexAtlas *c, LoadTexture &file) {
+	if(c->regional) {
+		collection = c;
+		filename = file.filename;
+		QImageReader reader(filename);
+		QSize size = reader.size();
+		if(!reader.canRead() || !size.isValid() || size.isEmpty()) return false;
+		file.width = size.width(); file.height = size.height();
+		// JPEG is opaque. Other formats need the existing alpha-marker check.
+		if(reader.format() != "jpeg" && reader.format() != "jpg") {
+			QImage image = reader.read();
+			if(image.isNull()) return false;
+			makeOpaque(image, fully_transparent);
+		}
+		int extent = std::max(size.width(), size.height());
+		while(extent > c->side) { extent /= 2; ++source_levels; }
+		levels.resize(source_levels);
+		for(int i = 0; i < source_levels; ++i) {
+			TexLevel &l = levels[i];
+			l.collection = c; l.tex = tex; l.level = i;
+			l.width = size.width(); l.height = size.height();
+			l.tilew = (l.width-1)/c->tileSide()+1;
+			l.tileh = (l.height-1)/c->tileSide()+1;
+			size = QSize(std::max(1, int(round(size.width()*c->scale))),
+			             std::max(1, int(round(size.height()*c->scale))));
+		}
+		return true;
+	}
 	QImage img;
 	bool success = img.load(file.filename);
 	if(!success)
@@ -243,7 +274,14 @@ void TexPyramid::buildLevel(int level) {
 	TexLevel &texlevel = levels.back();
 	texlevel.level = level;
 	texlevel.collection = collection;
-	texlevel.build(levels[level-1]);
+	if(collection->regional) {
+		const TexLevel &parent = levels[level-1];
+		texlevel.tex = parent.tex;
+		texlevel.width = std::max(1, int(floor(parent.width*collection->scale)));
+		texlevel.height = std::max(1, int(floor(parent.height*collection->scale)));
+		texlevel.tilew = (texlevel.width-1)/collection->tileSide()+1;
+		texlevel.tileh = (texlevel.height-1)/collection->tileSide()+1;
+	} else texlevel.build(levels[level-1]);
 }
 
 
@@ -345,3 +383,71 @@ void TexAtlas::pruneCache() {
 }
 
 
+
+QImage TexPyramid::imageAtLevel(int level) {
+	QImage image(filename);
+	if(image.isNull()) throw QString("Could not decode texture: ") + filename;
+	bool transparent;
+	makeOpaque(image, transparent);
+	for(int i = 1; i <= std::min(level, source_levels-1); ++i)
+		image = image.scaled(levels[i].width, levels[i].height);
+	// Mirror only the requested tiles at full detail, avoiding a second
+	// whole-sheet allocation (another 1 GiB for a 16K RGB32 image).
+	if(level < source_levels) return image;
+	image = image.mirrored();
+	// Reproduce the legacy pyramid's rounding, tile boundaries, and orientation.
+	// Its first levels resize whole images; subsequent levels resize 4096px tiles.
+	for(int i = source_levels; i <= level; ++i) {
+		const TexLevel &target = levels[i];
+		const int side = collection->side, oside = int(side/collection->scale);
+		QImage reduced(target.width, target.height, QImage::Format_RGB32);
+		reduced.fill(QColor(127,127,127));
+		{
+			QPainter painter(&reduced);
+			for(int y = 0; y < target.height; y += side) {
+				for(int x = 0; x < target.width; x += side) {
+					int sx = (x/side)*oside, sy = (y/side)*oside;
+					int sw = std::min(oside, image.width()-sx), sh = std::min(oside, image.height()-sy);
+					QImage tile = image.copy(sx, sy, sw, sh);
+					painter.drawImage(x, y, tile.scaled(std::min(side,target.width-x), std::min(side,target.height-y)));
+				}
+			}
+		}
+		image = reduced;
+	}
+	return image;
+}
+
+void TexAtlas::request(int tex, int level, QRect region) {
+	int side = tileSide();
+	for(int y = region.top()/side; y <= region.bottom()/side; ++y)
+		for(int x = region.left()/side; x <= region.right()/side; ++x)
+			requested.insert(Index(tex, level, x + y*pyramids[tex].levels[level].tilew));
+}
+
+void TexAtlas::prepare(int level) {
+	// All previous-level consumers finished before this call. Reuse the disk file
+	// instead of retaining obsolete pyramid tiles for the rest of the build.
+	ram.clear(); disk.clear(); cache_size = 0;
+	if(storage.isOpen()) { storage.resize(0); storage.seek(0); }
+	uint64_t cached_pixels = 0, source_pixels = 0;
+	auto it = requested.begin();
+	while(it != requested.end()) {
+		int tex = it->tex;
+		QImage source = pyramids[tex].imageAtLevel(level);
+		source_pixels += uint64_t(source.width())*source.height();
+		const TexLevel &l = pyramids[tex].levels[level];
+		while(it != requested.end() && it->tex == tex) {
+			int x = (it->index % l.tilew)*tileSide(), y = (it->index / l.tilew)*tileSide();
+			int w = std::min(tileSide(), l.width-x), h = std::min(tileSide(), l.height-y);
+			bool flip = level < pyramids[tex].source_levels;
+			QImage tile = source.copy(x, flip ? l.height-y-h : y, w, h);
+			if(flip) tile = tile.mirrored();
+			cached_pixels += uint64_t(tile.width())*tile.height();
+			addImg(*it++, tile);
+		}
+	}
+	requested.clear();
+	cout << "Texture regions level " << level << ": " << cached_pixels << " cached pixels / "
+	     << source_pixels << " source pixels; " << storage.size() << " cache disk bytes" << endl;
+}

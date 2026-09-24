@@ -147,7 +147,7 @@ public:
 
 	void processBlock(KDTreeSoup *input, StreamSoup *output, uint block, int level);
 
-	QImage extractNodeTex(TMesh &mesh, int level, float &error, float &pixelXedge);
+	QImage extractNodeTex(TMesh &mesh, int level, float &error, float &pixelXedge, bool collectOnly = false);
 	void invertNodes(); //
 	void saturateNode(quint32 n);
 	void optimizeNode(quint32 node, uchar *chunk);

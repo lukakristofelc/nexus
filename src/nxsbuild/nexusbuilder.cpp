@@ -127,6 +127,7 @@ void NexusBuilder::initAtlas(std::vector<QImage>& textures) {
 }
 
 bool NexusBuilder::initAtlas(std::vector<LoadTexture> &textures) {
+	atlas.regional = losslessTextures && useNodeTex;
 	if(textures.size()) {
 		bool success = atlas.addTextures(textures);
 		if(!success)
@@ -199,7 +200,7 @@ public:
 
 };
 
-QImage NexusBuilder::extractNodeTex(TMesh &mesh, int level, float &error, float &pixelXedge) {
+QImage NexusBuilder::extractNodeTex(TMesh &mesh, int level, float &error, float &pixelXedge, bool collectOnly) {
 	std::vector<vcg::Box2f> boxes;
 	std::vector<int> box_texture; //which texture each box belongs;
 	std::vector<int> vertex_to_tex(mesh.vert.size(), -1);
@@ -312,6 +313,12 @@ QImage NexusBuilder::extractNodeTex(TMesh &mesh, int level, float &error, float 
 		size[1] = std::min(h, ceil(box.max[1]/py)) - origin[1];
 		if(size[0] <= 0) size[0] = 1;
 		if(size[1] <= 0) size[1] = 1;
+	}
+
+	if(collectOnly) {
+		for(size_t i = 0; i < boxes.size(); ++i)
+			atlas.request(box_texture[i], level, QRect(origins[i][0], origins[i][1], sizes[i][0], sizes[i][1]));
+		return QImage();
 	}
 
 	// Reserve a real atlas region for untextured faces. The background at
@@ -804,6 +811,21 @@ void NexusBuilder::processBlock(KDTreeSoup *input, StreamSoup *output, uint bloc
 
 void NexusBuilder::createMeshLevel(KDTreeSoup *input, StreamSoup *output, int level) {
 	atlas.buildLevel(level);
+	if(atlas.regional && hasTextures()) {
+		// Plan exact atlas rectangles before decoding photographs. Geometry is
+		// unchanged; each block is released before reading the next one.
+		for(uint block = 0; block < input->nBlocks(); ++block) {
+			Soup soup = input->get(block);
+			if(!soup.size()) continue;
+			TMesh mesh;
+			mesh.load(soup);
+			input->lock(mesh, block);
+			mesh.splitSeams(header.signature);
+			float error, pixelXedge;
+			extractNodeTex(mesh, level, error, pixelXedge, true);
+		}
+		atlas.prepare(level);
+	}
 	if(level > 0)
 		atlas.flush(level-1);
 
