@@ -577,6 +577,8 @@ quint32 ObjLoader::getTriangles(quint32 size, Triangle *faces) {
  * Seeks all verteces in whole file
  */
 quint32 ObjLoader::getVertices(quint32 size, Splat *vertices) {
+	// readMTL can scan to EOF when the OBJ has no material library.
+	if(current_vertex == 0) file.seek(0);
 	char buffer[1024];
 	
 	quint32 count = 0;
