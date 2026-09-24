@@ -111,7 +111,7 @@ function getUint64(view) {
 	var lo = view.getUint32(view.offset, true);
 	var hi = view.getUint32(view.offset + 4, true);
 	view.offset += 8;
-	return ((hi * (1 << 32)) + lo);
+	return hi * 0x100000000 + lo;
 }
 
 function getUint32(view) {
@@ -411,12 +411,13 @@ Mesh.prototype = {
 
 		var n = t.nodesCount;
 
-		t.noffsets  = new Uint32Array(n);
+		// Expanded 256-byte block offsets need 40 bits for large NXS files.
+		t.noffsets  = new Float64Array(n);
 		t.nvertices = new Uint32Array(n);
 		t.nfaces    = new Uint32Array(n);
 		t.nerrors   = new Float32Array(n);
 		t.nspheres  = new Float32Array(n*5);
-		t.nsize     = new Float32Array(n);
+		t.nsize     = new Float64Array(n);
 		t.nfirstpatch = new Uint32Array(n);
 
 		for(i = 0; i < n; i++) {
@@ -442,8 +443,10 @@ Mesh.prototype = {
 
 		view.offset += t.patchesCount*12;
 
-		t.textures = new Uint32Array(t.texturesCount);
+		t.textures = new Float64Array(t.texturesCount);
 		t.texref = new Uint32Array(t.texturesCount);
+		t.texsize = new Float64Array(t.texturesCount);
+		t.texcharge = new Float64Array(t.texturesCount);
 		for(i = 0; i < t.texturesCount; i++) {
 			t.textures[i] = padding*getUint32(view);
 			view.offset += 16*4; //skip proj matrix
@@ -452,22 +455,15 @@ Mesh.prototype = {
 		t.vsize = 12 + (t.vertex.normal?6:0) + (t.vertex.color?4:0) + (t.vertex.texCoord?8:0);
 		t.fsize = 6;
 
-		//problem: I have no idea how much space a texture is needed in GPU. 10x factor assumed.
-		var tmptexsize = new Uint32Array(n-1);
-		var tmptexcount = new Uint32Array(n-1);
-		for(var i = 0; i < n-1; i++) {
-			for(var p = t.nfirstpatch[i]; p != t.nfirstpatch[i+1]; p++) {
-				var tex = t.patches[p*3+2];
-				tmptexsize[i] += t.textures[tex+1] - t.textures[tex];
-				tmptexcount[i]++;
-			}
+		// Reserve encoded texture bytes until decoding reveals the GPU size.
+		// Geometry is charged per node; shared textures are charged only once.
+		for(var i = 0; i < t.texturesCount - 1; i++)
+			t.texsize[i] = t.textures[i+1] - t.textures[i];
+		for(var i = 0; i < n-1; i++)
 			t.nsize[i] = t.vsize*t.nvertices[i] + t.fsize*t.nfaces[i];
-		}
-		for(var i = 0; i < n-1; i++) {
-			t.nsize[i] += 10*tmptexsize[i]/tmptexcount[i];
-		}
 
 		t.status = new Uint8Array(n); //0 for none, 1 for ready, 2+ for waiting data
+		t.requests = new Array(n);
 		t.frames = new Uint32Array(n);
 		t.errors = new Float32Array(n); //biggest error of instances
 		t.ibo    = new Array(n);
@@ -664,19 +660,7 @@ Instance.prototype = {
 
 		var n = t.mesh.nodesCount;
 
-		if(t.sameResolution && t.selected != null) {
-			//check if status and selected agree:
-			let allok = true;
-			for(let i = 0; i < n; i++) {
-				if(t.selected[i] && t.mesh.status[i] == 0) {
-					allok = false;
-					break;
-				}
-			}
-			if(allok && !t.visitQueue.size && !t.nblocked) return;
-		}
-
-
+		// Camera movement and cache priorities can change without a zoom change.
 		t.selected = new Uint8Array(n);
 
 		if(!t.isReady) return;
@@ -684,11 +668,11 @@ Instance.prototype = {
 		t.blocked  = new Uint8Array(n);
 
 
+		t.currentError = t.context.currentError;
 		t.visitQueue = new PriorityQueue(n);
 		for(var i = 0; i < t.mesh.nroots; i++)
 			t.insertNode(i);
 
-		t.currentError = t.context.currentError;
 		t.drawSize = 0;
 		t.nblocked = 0;
 
@@ -1024,12 +1008,12 @@ function removeNode(context, node) {
 	if(m.status[n] == 0) return;
 
 	if(Debug.verbose) console.log("Removing " + m.url + " node: " + n);
+	if(m.status[n] > 1) context.pending--;
 	m.status[n] = 0;
-
-	if (n in m.georeq && m.georeq[n].readyState != 4) {
-		m.georeq[n].abort();
-		context.pending--;
-	}
+	var active = m.requests[n];
+	m.requests[n] = null;
+	if(active && active.cancelTexture) active.cancelTexture();
+	if(n in m.georeq && m.georeq[n].readyState != 4) m.georeq[n].abort();
 
 	context.cacheSize -= m.nsize[n];
 	context.gl.deleteBuffer(m.vbo[n]);
@@ -1037,14 +1021,29 @@ function removeNode(context, node) {
 	m.vbo[n] = m.ibo[n] = null;
 
 	if(!m.vertex.texCoord) return;
-	if (n in m.texreq && m.texreq[n].readyState != 4) m.texreq.abort();
+	if (n in m.texreq && m.texreq[n].readyState != 4) m.texreq[n].abort();
 	var tex = m.patches[m.nfirstpatch[n]*3+2]; //TODO assuming one texture per node
 	m.texref[tex]--;
 
-	if(m.texref[tex] == 0 && m.texids[tex]) {
-		context.gl.deleteTexture(m.texids[tex]);
+	if(m.texref[tex] == 0) {
+		context.cacheSize -= m.texcharge[tex];
+		m.texcharge[tex] = 0;
+		if(m.texids[tex]) context.gl.deleteTexture(m.texids[tex]);
 		m.texids[tex] = null;
 	}
+}
+
+function isActiveRequest(node) {
+	return node.mesh.requests[node.id] === node && node.mesh.status[node.id] > 1;
+}
+
+function finishNodeIfReady(node) {
+	if (!isActiveRequest(node) || node.mesh.status[node.id] !== 2) return;
+	node.mesh.status[node.id] = 1;
+	node.reqAttempt = 0;
+	node.context.pending--;
+	node.instance.onUpdate && node.instance.onUpdate();
+	updateCache(node.context.gl);
 }
 
 function requestNode(context, node) {
@@ -1052,6 +1051,7 @@ function requestNode(context, node) {
 	var m = node.mesh;
 
 	m.status[n] = 2; //pending
+	m.requests[n] = node;
 
 	context.pending++;
 	context.cacheSize += m.nsize[n];
@@ -1061,8 +1061,15 @@ function requestNode(context, node) {
 	node.nvert = m.nvertices[n];
 	node.nface = m.nfaces[n];
 
-	requestNodeGeometry(context, node);
+	if(m.vertex.texCoord) {
+		var tex = m.patches[m.nfirstpatch[n]*3+2];
+		if(m.texref[tex]++ == 0) {
+			m.texcharge[tex] = m.texsize[tex];
+			context.cacheSize += m.texcharge[tex];
+		}
+	}
 	requestNodeTexture(context, node);
+	requestNodeGeometry(context, node);
 }
 
 function requestNodeGeometry(context, node) {
@@ -1074,7 +1081,8 @@ function requestNodeGeometry(context, node) {
 	if(m.db) {
 		let transaction = node.mesh.db.transaction('mesh', "readwrite");
 		let request = transaction.objectStore('mesh').get(node.id);
-		request.onsuccess = (e) => { 
+		request.onsuccess = (e) => {
+			if(!isActiveRequest(node)) return;
 			if(request.result) {
 				loadNodeGeometry({ response: request.result}, context, node);
 			} else {
@@ -1092,6 +1100,7 @@ function httpRequestNodeGeometry(context, node) {
 	var m = node.mesh;
 	let request = {
 		load:function() {
+			if(!isActiveRequest(node)) return;
 			delete m.georeq[n]; 
 			if(m.db) {
 				let transaction = m.db.transaction('mesh', "readwrite");
@@ -1100,11 +1109,13 @@ function httpRequestNodeGeometry(context, node) {
 			}
 			loadNodeGeometry(this, context, node); },
 		error:function() {
+			if(!isActiveRequest(node)) return;
 			delete m.georeq[n]; 
 			if(Debug.verbose) console.log("Geometry request error!");
 			recoverNode(context, node, 0);
 		},
 		abort:function() {
+			if(!isActiveRequest(node)) return;
 			delete m.georeq[n]; 
 			if(Debug.verbose) console.log("Geometry request abort!");
 			removeNode(context, node);
@@ -1131,7 +1142,6 @@ function requestNodeTexture(context, node) {
 	if(!m.vertex.texCoord) return;
 
 	var tex = m.patches[m.nfirstpatch[n]*3+2];
-	m.texref[tex]++;
 	if(m.texids[tex])
 		return;
 
@@ -1140,7 +1150,8 @@ function requestNodeTexture(context, node) {
 	if(m.db) {
 		let transaction = node.mesh.db.transaction('tex', "readwrite");
 		let request = transaction.objectStore('tex').get(node.id);
-		request.onsuccess = (e) => { 
+		request.onsuccess = (e) => {
+			if(!isActiveRequest(node)) return;
 			if(request.result) {
 				loadNodeTexture({ response: request.result}, context, node, tex);
 			} else {
@@ -1158,7 +1169,8 @@ function httpRequestNodeTexture(context, node, tex) {
 	var n = node.id;
 	var m = node.mesh;
 	let request = {
-		load:function() { 
+		load:function() {
+			if(!isActiveRequest(node)) return;
 			delete m.texreq[n];
 			if(m.db) {
 				let transaction = m.db.transaction('tex', "readwrite");
@@ -1168,11 +1180,13 @@ function httpRequestNodeTexture(context, node, tex) {
 			loadNodeTexture(this, context, node, tex);  
 		},
 		error:function() {
+			if(!isActiveRequest(node)) return;
 			if(Debug.verbose) console.log("Texture request error!");
 			delete m.texreq[n];
 			recoverNode(context, node, 1);
 		},
 		abort:function() {
+			if(!isActiveRequest(node)) return;
 			if(Debug.verbose) console.log("Texture request abort!");
 			delete m.texreq[n];
 			removeNode(context, node);
@@ -1195,7 +1209,7 @@ function httpRequestNodeTexture(context, node, tex) {
 function recoverNode(context, node, id) {
 	var n = node.id;
 	var m = node.mesh;
-	if(m.status[n] == 0) return;
+	if(!isActiveRequest(node)) return;
 
 	m.status[n]--;
 
@@ -1217,12 +1231,14 @@ function recoverNode(context, node, id) {
 			if(Debug.verbose) console.log("Recovering texture for " + m.url + " node: " + n);
 			break;
 	}
+	// A different node may already have uploaded the shared atlas.
+	finishNodeIfReady(node);
 }
 
 function loadNodeGeometry(request, context, node) {
 	var n = node.id;
 	var m = node.mesh;
-	if(m.status[n] == 0) return;
+	if(!isActiveRequest(node)) return;
 
 	node.buffer = request.response;
 
@@ -1245,52 +1261,112 @@ function powerOf2(n) {
 	return n && (n & (n - 1)) === 0;
 }
 
+function textureByteSize(width, height, mipmaps) {
+	var bytes = width * height * 4; // texImage2D uploads RGBA/UNSIGNED_BYTE
+	if (mipmaps) {
+		while (width > 1 || height > 1) {
+			width = Math.max(1, Math.floor(width / 2));
+			height = Math.max(1, Math.floor(height / 2));
+			bytes += width * height * 4;
+		}
+	}
+	return bytes;
+}
+
 function loadNodeTexture(request, context, node, texid) {
 	var n = node.id;
 	var m = node.mesh;
-	if(m.status[n] == 0) return;
+	if (!isActiveRequest(node)) return;
 
 	var blob = request.response;
 
 	var urlCreator = window.URL || window.webkitURL;
-	var img = document.createElement('img');
-	img.onerror = function(e) { console.log("Texture loading error!"); };
-	img.src = urlCreator.createObjectURL(blob);
+	var img = document.createElement("img");
+	var imageUrl = urlCreator.createObjectURL(blob);
+	var cleanup = function () {
+		urlCreator.revokeObjectURL(imageUrl);
+		img.onload = img.onerror = null;
+		node.cancelTexture = null;
+	};
+	node.cancelTexture = function () {
+		cleanup();
+		img.src = "";
+	};
+	img.onerror = function (e) {
+		cleanup();
+		if (isActiveRequest(node)) recoverNode(context, node, 1);
+	};
 
 	var gl = context.gl;
-	img.onload = function() {
-		urlCreator.revokeObjectURL(img.src);
+	img.onload = function () {
+		cleanup();
+		if (!isActiveRequest(node)) return;
+		var mipmaps = !(gl instanceof WebGLRenderingContext) ||
+			(powerOf2(img.width) && powerOf2(img.height));
+		var bytes = textureByteSize(img.width, img.height, mipmaps);
+		m.texsize[texid] = bytes; // retain decoded size across eviction/reload
 
-		var flip = gl.getParameter(gl.UNPACK_FLIP_Y_WEBGL);
-		gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-		var tex = m.texids[texid] = gl.createTexture();
-		gl.bindTexture(gl.TEXTURE_2D, tex);
+		// Concurrent nodes can reference the same atlas. Upload and charge it
+		// only once, and reserve room before allocating any GPU texture.
+		if (!m.texids[texid]) {
+			var extra = bytes - m.texcharge[texid];
+			if (bytes + m.nsize[n] > context.maxCacheSize ||
+				!makeCacheRoom(context, extra, node, texid)) {
+				removeNode(context, node);
+				return;
+			}
+			context.cacheSize += extra;
+			m.texcharge[texid] = bytes;
 
-//TODO some textures might be alpha only! save space
-		var s = gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
-		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-		gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+			var flip = gl.getParameter(gl.UNPACK_FLIP_Y_WEBGL);
+			gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+			var tex = (m.texids[texid] = gl.createTexture());
+			gl.bindTexture(gl.TEXTURE_2D, tex);
 
-		if(!(gl instanceof WebGLRenderingContext) || (powerOf2(img.width) && powerOf2(img.height))) {
-			gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST_MIPMAP_LINEAR);
-			gl.generateMipmap(gl.TEXTURE_2D);
-		} else {
-			gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+			//TODO some textures might be alpha only! save space
+			var s = gl.texImage2D(
+				gl.TEXTURE_2D,
+				0,
+				gl.RGBA,
+				gl.RGBA,
+				gl.UNSIGNED_BYTE,
+				img
+			);
+			gl.texParameteri(
+				gl.TEXTURE_2D,
+				gl.TEXTURE_WRAP_T,
+				gl.CLAMP_TO_EDGE
+			);
+			gl.texParameteri(
+				gl.TEXTURE_2D,
+				gl.TEXTURE_WRAP_S,
+				gl.CLAMP_TO_EDGE
+			);
+			gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+
+			if (mipmaps) {
+				gl.texParameteri(
+					gl.TEXTURE_2D,
+					gl.TEXTURE_MIN_FILTER,
+					gl.NEAREST_MIPMAP_LINEAR
+				);
+				gl.generateMipmap(gl.TEXTURE_2D);
+			} else {
+				gl.texParameteri(
+					gl.TEXTURE_2D,
+					gl.TEXTURE_MIN_FILTER,
+					gl.LINEAR
+				);
+			}
+
+			gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, flip);
 		}
-
-		gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, flip);
 
 		m.status[n]--;
 
-		if(m.status[n] == 2) {
-			m.status[n]--; //ready
-			node.reqAttempt = 0;
-			node.context.pending--;
-			node.instance.onUpdate && node.instance.onUpdate();
-			updateCache(gl);
-		}
-	}
+		finishNodeIfReady(node);
+	};
+	img.src = imageUrl;
 }
 
 function scramble(n, coords, normals, colors) {
@@ -1317,6 +1393,7 @@ function scramble(n, coords, normals, colors) {
 }
 
 function readyNode(node) {
+	if(!isActiveRequest(node)) return;
 	var m = node.mesh;
 	var n = node.id;
 	var nv = m.nvertices[n];
@@ -1404,13 +1481,7 @@ function readyNode(node) {
 
 	m.status[n]--;
 
-	if(m.status[n] == 2) {
-		m.status[n]--; //ready
-		node.reqAttempt = 0;
-		node.context.pending--;
-		node.instance.onUpdate && node.instance.onUpdate();
-		updateCache(gl);
-	}
+	finishNodeIfReady(node);
 }
 
 function flush(context, mesh) {
@@ -1418,33 +1489,69 @@ function flush(context, mesh) {
 		removeNode(context, {mesh:mesh, id: i });
 }
 
-function updateCache(gl) {
-	var context = getContext(gl);
+function isProtectedFromEviction(mesh, nodeId) {
+	// Keep at least one root node resident per mesh so objects never fully disappear
+	// under cache pressure (coarse LOD stays visible).
+	if (nodeId >= mesh.nroots) return false;
 
-	var best = null;
-	context.candidates.forEach(function(e) {
-		if(e.mesh.status[e.id] == 0 && (!best || e.error > best.error)) best = e;
-	});
-	context.candidates = [];
-	if(!best) return;
-
-	while(context.cacheSize > context.maxCacheSize) {
-		var worst = null;
-		//find node with smallest error in cache
-		context.meshes.forEach(function(m) {
-			var n = m.nodesCount;
-			for(i = 0; i < n; i++)
-				if(m.status[i] == 1 && (!worst ||  m.errors[i] < worst.error))
-					worst = {error: m.errors[i], frame: m.frames[i], mesh:m, id:i};
-		});
-		if(!worst || (worst.error >= best.error && worst.frame == best.frame))
-			return;
-		removeNode(context, worst);
+	var readyRoots = 0;
+	for (var r = 0; r < mesh.nroots; r++) {
+		if (mesh.status[r] == 1) readyRoots++;
 	}
 
-	if(context.pending < maxPending) {
+	return readyRoots <= 1;
+}
+
+function makeCacheRoom(context, extra, best, uploadingTexture) {
+	while (context.cacheSize + extra > context.maxCacheSize) {
+		var worst = null;
+		// Evict old-view nodes first, then the least useful current-view node.
+		context.meshes.forEach(function (m) {
+			var n = m.nodesCount;
+			for (var i = 0; i < n; i++) {
+				if (m.status[i] != 1) continue;
+				if (isProtectedFromEviction(m, i)) continue;
+				if (m === best.mesh && m.vertex.texCoord && uploadingTexture !== undefined &&
+					m.patches[m.nfirstpatch[i] * 3 + 2] === uploadingTexture) continue;
+				if (!worst || m.frames[i] < worst.frame ||
+					(m.frames[i] === worst.frame && m.errors[i] < worst.error))
+					worst = {
+						error: m.errors[i],
+						frame: m.frames[i],
+						mesh: m,
+						id: i,
+					};
+			}
+		});
+		if (
+			!worst ||
+			(worst.frame === context.frame &&
+				worst.error >= best.mesh.errors[best.id])
+		)
+			return false;
+		removeNode(context, worst);
+	}
+	return true;
+}
+
+function updateCache(gl) {
+	var context = getContext(gl);
+	if (gl.isContextLost()) return;
+	// Keep all candidates; one blocked or oversized node must not starve
+	// other meshes or smaller refinements that fit in the remaining budget.
+	context.candidates.sort(function (a, b) { return b.error - a.error; });
+	while (context.pending < maxPending && context.candidates.length) {
+		var best = context.candidates.shift();
+		var m = best.mesh;
+		if (m.status[best.id] != 0) continue;
+		var extra = m.nsize[best.id];
+		if (m.vertex.texCoord) {
+			var tex = m.patches[m.nfirstpatch[best.id] * 3 + 2];
+			if (!m.texref[tex]) extra += m.texsize[tex];
+		}
+		if (extra > context.maxCacheSize ||
+			!makeCacheRoom(context, extra, best, m.vertex.texCoord ? tex : undefined)) continue;
 		requestNode(context, best);
-		updateCache(gl);
 	}
 }
 
